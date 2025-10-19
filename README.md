@@ -3,7 +3,7 @@
 # 🍺 BeerBot Backend
 
 [![Go](https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat-square&logo=go)](https://golang.org/)
-[![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?style=flat-square&logo=docker)](https://www.docker.com/)
+[![Docker Hub](https://img.shields.io/badge/Docker%20Hub-danielweeber%2Fbeerbot--backend-2496ED?style=flat-square&logo=docker)](https://hub.docker.com/r/danielweeber/beerbot-backend)
 [![SQLite](https://img.shields.io/badge/Database-SQLite-003B57?style=flat-square&logo=sqlite)](https://www.sqlite.org/)
 
 **A modern Slack bot backend for virtual team appreciation with beer emojis! 🍻**
@@ -51,12 +51,56 @@ BeerBot Backend is the core service that handles Slack events, processes beer tr
 - [Go 1.21+](https://golang.org/) (for development)
 - Slack workspace with admin permissions
 
-### Installation
+### 🐳 Using Docker Images
+
+**Quick Start with Docker Hub:**
+```bash
+# Pull and run the latest image
+docker run -d \
+  --name beerbot-backend \
+  -p 8080:8080 \
+  -e BOT_TOKEN="xoxb-your-bot-token" \
+  -e APP_TOKEN="xapp-your-app-token" \
+  -e API_TOKEN="your-secure-api-token" \
+  -v beerbot-data:/data \
+  danielweeber/beerbot-backend:latest
+```
+
+**Docker Compose Example:**
+```yaml
+version: '3.8'
+services:
+  beerbot-backend:
+    image: danielweeber/beerbot-backend:latest
+    container_name: beerbot-backend
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      BOT_TOKEN: "xoxb-your-bot-token"
+      APP_TOKEN: "xapp-your-app-token"
+      API_TOKEN: "your-secure-api-token"
+      CHANNEL: "C1234567890"  # Optional: specific channel
+      EMOJI: ":beer:"         # Optional: default emoji
+      MAX_PER_DAY: "10"       # Optional: daily limit
+    volumes:
+      - beerbot-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  beerbot-data:
+```
+
+### Installation from Source
 
 1. **Clone the repository:**
    ```bash
-   git clone https://github.com/DanielWeeber/BeerBot.git
-   cd BeerBot/BeerBot-backend
+   git clone https://github.com/DanielWeeber/BeerBot-backend.git
+   cd BeerBot-backend
    ```
 
 2. **Set up Slack App:**
@@ -224,10 +268,50 @@ docker-compose -f docker-compose.test.yml up --build
 
 ### Docker Compose (Recommended)
 
+**Using Docker Hub Image:**
+
+Create a `docker-compose.yml` file:
+
+```yaml
+version: '3.8'
+services:
+  beerbot-backend:
+    image: danielweeber/beerbot-backend:latest
+    container_name: beerbot-backend
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      BOT_TOKEN: "xoxb-your-bot-token"
+      APP_TOKEN: "xapp-your-app-token"
+      API_TOKEN: "your-secure-api-token"
+      CHANNEL: "C1234567890"  # Optional
+      EMOJI: ":beer:"         # Optional
+      MAX_PER_DAY: "10"       # Optional
+    volumes:
+      - beerbot-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  beerbot-data:
+```
+
+Then run:
+
+```bash
+docker-compose up -d
+```
+
+**Building from Source:**
+
 ```bash
 # Clone and configure
-git clone https://github.com/DanielWeeber/BeerBot.git
-cd BeerBot/BeerBot-backend
+git clone https://github.com/DanielWeeber/BeerBot-backend.git
+cd BeerBot-backend
 cp docker-compose.override.yml.example docker-compose.override.yml
 
 # Edit docker-compose.override.yml with your tokens
