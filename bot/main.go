@@ -403,21 +403,36 @@ func main() {
 
 	// Start socketmode
 	go func() {
+		log.Println("starting socketmode client...")
 		if err := socketClient.RunContext(ctx); err != nil {
-			log.Printf("socketmode run: %v", err)
+			if ctx.Err() != nil {
+				log.Printf("socketmode client stopped due to context cancellation: %v", err)
+			} else {
+				log.Printf("socketmode client error: %v", err)
+			}
+		} else {
+			log.Println("socketmode client stopped gracefully")
 		}
 	}()
 
 	select {
-	case <-sigs:
-		log.Println("shutdown signal")
+	case sig := <-sigs:
+		log.Printf("received shutdown signal: %v", sig)
+		cancel() // Cancel context to stop socketmode
 	case <-ctx.Done():
+		log.Println("context cancelled, shutting down")
 	}
 
 	// shutdown http
+	log.Println("initiating graceful shutdown...")
 	ctxShutdown, cancelShutdown := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancelShutdown()
-	_ = srv.Shutdown(ctxShutdown)
+	if err := srv.Shutdown(ctxShutdown); err != nil {
+		log.Printf("http server shutdown error: %v", err)
+	} else {
+		log.Println("http server shutdown completed")
+	}
+	log.Println("shutdown complete")
 	// socketmode client will stop when context is cancelled / RunContext returns
 }
 
