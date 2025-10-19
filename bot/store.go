@@ -12,23 +12,10 @@ type SQLiteStore struct {
 }
 
 func NewSQLiteStore(db *sql.DB) (*SQLiteStore, error) {
-	fmt.Printf("[DEBUG] NewSQLiteStore: db pointer: %v\n", db)
-	// Print actual SQLite DB file path
-	row := db.QueryRow("PRAGMA database_list;")
-	var seq int
-	var name, file string
-	if err := row.Scan(&seq, &name, &file); err == nil {
-		fmt.Printf("[DEBUG] SQLite DB file: %s\n", file)
-	} else {
-		fmt.Printf("[DEBUG] Could not get SQLite DB file: %v\n", err)
-	}
 	s := &SQLiteStore{db: db}
-	fmt.Printf("[DEBUG] NewSQLiteStore: starting migration\n")
 	if err := s.migrate(); err != nil {
-		fmt.Printf("[DEBUG] NewSQLiteStore: migration failed: %v\n", err)
 		return nil, err
 	}
-	fmt.Printf("[DEBUG] NewSQLiteStore: migration succeeded\n")
 	return s, nil
 }
 
@@ -261,90 +248,12 @@ func (s *SQLiteStore) CountGivenInDateRange(giverID string, start time.Time, end
 	startStr := start.Format("2006-01-02")
 	endStr := end.Format("2006-01-02")
 
-	var debugRows1, debugRows2 *sql.Rows
-	var derr1, derr2 error
-
-	// Extra debug: print all rows for this date (ignoring giver_id)
-	debugRows1, derr1 = s.db.Query("SELECT giver_id, recipient_id, ts_rfc, substr(ts_rfc, 1, 10), count FROM beers WHERE substr(ts_rfc, 1, 10) = ?", startStr)
-	if derr1 == nil {
-		defer debugRows1.Close()
-		for debugRows1.Next() {
-			var g, r, tsrfc, d string
-			var cnt int
-			if err := debugRows1.Scan(&g, &r, &tsrfc, &d, &cnt); err == nil {
-				fmt.Printf("[DEBUG] AllRowsForDate: giver_id=%s recipient_id=%s ts_rfc=%s substr(ts_rfc,1,10)=%s count=%d\n", g, r, tsrfc, d, cnt)
-			}
-		}
-	} else {
-		fmt.Printf("[DEBUG] Could not query all rows for date: %v\n", derr1)
-	}
-
-	// Extra debug: print all rows for this giver_id (ignoring date)
-	debugRows2, derr2 = s.db.Query("SELECT giver_id, recipient_id, ts_rfc, substr(ts_rfc, 1, 10), count FROM beers WHERE giver_id = ?", giverID)
-	if derr2 == nil {
-		defer debugRows2.Close()
-		for debugRows2.Next() {
-			var g, r, tsrfc, d string
-			var cnt int
-			if err := debugRows2.Scan(&g, &r, &tsrfc, &d, &cnt); err == nil {
-				fmt.Printf("[DEBUG] AllRowsForGiver: giver_id=%s recipient_id=%s ts_rfc=%s substr(ts_rfc,1,10)=%s count=%d\n", g, r, tsrfc, d, cnt)
-			}
-		}
-	} else {
-		fmt.Printf("[DEBUG] Could not query all rows for giver: %v\n", derr2)
-	}
 	var c int
-
-	// Extra debug: print all rows for this date (ignoring giver_id)
-	if debugRows1, derr1 := s.db.Query("SELECT giver_id, recipient_id, ts_rfc, substr(ts_rfc, 1, 10), count FROM beers WHERE substr(ts_rfc, 1, 10) = ?", startStr); derr1 == nil {
-		defer debugRows1.Close()
-		for debugRows1.Next() {
-			var g, r, tsrfc, d string
-			var cnt int
-			if err := debugRows1.Scan(&g, &r, &tsrfc, &d, &cnt); err == nil {
-				fmt.Printf("[DEBUG] AllRowsForDate: giver_id=%s recipient_id=%s ts_rfc=%s substr(ts_rfc,1,10)=%s count=%d\n", g, r, tsrfc, d, cnt)
-			}
-		}
-	} else {
-		fmt.Printf("[DEBUG] Could not query all rows for date: %v\n", derr1)
-	}
-
-	// Extra debug: print all rows for this giver_id (ignoring date)
-	if debugRows2, derr2 := s.db.Query("SELECT giver_id, recipient_id, ts_rfc, substr(ts_rfc, 1, 10), count FROM beers WHERE giver_id = ?", giverID); derr2 == nil {
-		defer debugRows2.Close()
-		for debugRows2.Next() {
-			var g, r, tsrfc, d string
-			var cnt int
-			if err := debugRows2.Scan(&g, &r, &tsrfc, &d, &cnt); err == nil {
-				fmt.Printf("[DEBUG] AllRowsForGiver: giver_id=%s recipient_id=%s ts_rfc=%s substr(ts_rfc,1,10)=%s count=%d\n", g, r, tsrfc, d, cnt)
-			}
-		}
-	} else {
-		fmt.Printf("[DEBUG] Could not query all rows for giver: %v\n", derr2)
-	}
-
 	query := `SELECT COALESCE(SUM(count), 0) FROM beers WHERE giver_id = ? AND substr(ts_rfc, 1, 10) BETWEEN ? AND ?`
-	fmt.Printf("[DEBUG] CountGivenInDateRange: giverID=%s, start=%s, end=%s\n", giverID, startStr, endStr)
-	// Extra debug: print all rows for this user and date
-	debugRows, derr := s.db.Query("SELECT giver_id, recipient_id, ts_rfc, date(ts_rfc), count FROM beers WHERE giver_id = ? AND date(ts_rfc) = date(?)", giverID, startStr)
-	if derr == nil {
-		defer debugRows.Close()
-		for debugRows.Next() {
-			var g, r, tsrfc, d string
-			var cnt int
-			if err := debugRows.Scan(&g, &r, &tsrfc, &d, &cnt); err == nil {
-				fmt.Printf("[DEBUG] Row: giver_id=%s recipient_id=%s ts_rfc=%s date(ts_rfc)=%s count=%d\n", g, r, tsrfc, d, cnt)
-			}
-		}
-	} else {
-		fmt.Printf("[DEBUG] Could not query debug rows: %v\n", derr)
-	}
 	err := s.db.QueryRow(query, giverID, startStr, endStr).Scan(&c)
 	if err != nil {
-		fmt.Printf("[DEBUG] CountGivenInDateRange ERROR: %v\n", err)
 		return 0, err
 	}
-	fmt.Printf("[DEBUG] CountGivenInDateRange RESULT: %d\n", c)
 	return c, nil
 }
 
@@ -355,13 +264,10 @@ func (s *SQLiteStore) CountReceivedInDateRange(recipientID string, start time.Ti
 	query := `SELECT COALESCE(SUM(count), 0) FROM beers WHERE recipient_id = ? AND substr(ts_rfc, 1, 10) BETWEEN ? AND ?`
 	startStr := start.Format("2006-01-02")
 	endStr := end.Format("2006-01-02")
-	fmt.Printf("[DEBUG] CountReceivedInDateRange: recipientID=%s, start=%s, end=%s\n", recipientID, startStr, endStr)
 	err := s.db.QueryRow(query, recipientID, startStr, endStr).Scan(&c)
 	if err != nil {
-		fmt.Printf("[DEBUG] CountReceivedInDateRange ERROR: %v\n", err)
 		return 0, err
 	}
-	fmt.Printf("[DEBUG] CountReceivedInDateRange RESULT: %d\n", c)
 	return c, nil
 }
 

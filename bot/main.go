@@ -103,8 +103,6 @@ func main() {
 	}
 
 	// open sqlite
-	log.Printf("[DEBUG] DB_PATH env: %s", os.Getenv("DB_PATH"))
-	log.Printf("[DEBUG] dbPath flag: %s", *dbPath)
 	dbDir := ""
 	dbFile := *dbPath
 	if idx := strings.LastIndex(dbFile, "/"); idx != -1 {
@@ -112,32 +110,21 @@ func main() {
 	}
 	if dbDir != "" {
 		if _, err := os.Stat(dbDir); os.IsNotExist(err) {
-			log.Printf("[DEBUG] DB directory %s does not exist, creating...", dbDir)
 			if err := os.MkdirAll(dbDir, 0o755); err != nil {
-				log.Fatalf("[DEBUG] Failed to create DB directory: %v", err)
+				log.Fatalf("Failed to create DB directory: %v", err)
 			}
-		} else {
-			log.Printf("[DEBUG] DB directory %s exists", dbDir)
 		}
 	}
-	if _, err := os.Stat(dbFile); err == nil {
-		log.Printf("[DEBUG] DB file %s exists before init", dbFile)
-	} else {
-		log.Printf("[DEBUG] DB file %s does not exist before init", dbFile)
-	}
-	log.Printf("[DEBUG] Opening SQLite DB at path: %s", dbFile)
 	db, err := sql.Open("sqlite3", dbFile)
 	if err != nil {
 		log.Fatalf("open db: %v", err)
 	}
 	defer db.Close()
 
-	log.Printf("[DEBUG] Running DB migration...")
 	store, err := NewSQLiteStore(db)
 	if err != nil {
 		log.Fatalf("init store: %v", err)
 	}
-	log.Printf("[DEBUG] DB migration complete. DB file: %s", dbFile)
 
 	// init Slack client
 	client := slack.New(*botToken, slack.OptionAppLevelToken(*appToken))
@@ -273,11 +260,6 @@ func main() {
 	// Slack event loop (Socket Mode Events API)
 	go func() {
 		for evt := range socketClient.Events {
-			logEvt := zlog.Debug().Str("type", string(evt.Type))
-			if evt.Request != nil && evt.Request.EnvelopeID != "" {
-				logEvt = logEvt.Str("envelope_id", evt.Request.EnvelopeID)
-			}
-			logEvt.Msg("received slack event")
 			switch evt.Type {
 			case socketmode.EventTypeEventsAPI:
 				socketClient.Ack(*evt.Request)
@@ -301,12 +283,8 @@ func main() {
 							// ignore message subtypes (edits, bot messages, etc.) -- only plain messages
 							// SubType is empty for normal user messages
 							if ev.SubType != "" {
-								zlog.Debug().Str("subtype", ev.SubType).Str("channel", ev.Channel).Str("user", ev.User).Msg("ignoring message with subtype")
 								continue
 							}
-
-							// Debug: emit event envelope id, fallback event id, timestamp and raw event types
-							zlog.Debug().Str("envelope_id", envelopeID).Str("channel", ev.Channel).Str("user", ev.User).Str("ts", ev.TimeStamp).Msg("received message event (debug)")
 
 							// compute a stable event id for message events: prefer envelopeID if present,
 							// otherwise build one from channel|user|ts which is stable across redeliveries
@@ -412,7 +390,7 @@ func main() {
 							// event was pre-marked via TryMarkEventProcessed
 						}
 					default:
-						zlog.Debug().Str("event_type", eventsAPIEvent.Type).Msg("ignoring non-message callback event")
+						// ignore non-message events
 					}
 				}
 			case socketmode.EventTypeHello:
@@ -446,7 +424,6 @@ func main() {
 // parseSlackTimestamp parses Slack timestamps of the form "1234567890.123456"
 func authMiddleware(apiToken string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		zlog.Debug().Str("apiToken", apiToken).Str("authHeader", r.Header.Get("Authorization")).Msg("auth middleware")
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
