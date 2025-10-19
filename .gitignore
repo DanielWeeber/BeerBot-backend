@@ -27,6 +27,7 @@
 /bot/*.sqlite
 /bot/testdata/
 /bot/.env
+/bot/bot
 
 # Docker
 docker-compose.override.yml

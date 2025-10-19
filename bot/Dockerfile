@@ -1,5 +1,5 @@
 # Step 1: Build the application
-FROM golang:1.23-alpine AS builder
+FROM golang:1.25-alpine AS builder
 WORKDIR /src
 
 # Install build dependencies
@@ -16,7 +16,7 @@ COPY . .
 RUN go build -o /bin/bot ./
 
 # Step 2: Create the final image
-FROM alpine:3.18
+FROM alpine:3.20
 RUN apk add --no-cache ca-certificates wget curl
 COPY --from=builder /bin/bot /bin/bot
 VOLUME /data
