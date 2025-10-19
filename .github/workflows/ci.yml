@@ -9,7 +9,7 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: ./bot
@@ -19,14 +19,18 @@ jobs:
         uses: actions/setup-go@v4
         with:
           go-version: '1.23'
+          cache-dependency-path: ./bot/go.sum
       - name: Install dependencies
         run: |
           sudo apt-get update && sudo apt-get install -y libsqlite3-dev
           go mod download
       - name: Run unit tests
         run: go test ./...
-      - name: Install golangci-lint
-        run: |
-          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v1.59.0
       - name: Run golangci-lint
-        run: golangci-lint run --timeout 10m
+        uses: golangci/golangci-lint-action@v4
+        with:
+          version: v1.59.0
+          args: --timeout=10m --verbose
+          skip-cache: false
+          skip-pkg-cache: false
+          skip-build-cache: false
