@@ -245,6 +245,16 @@ func main() {
 
 	mux.Handle("/api/givers", giversHandler)
 	mux.Handle("/api/recipients", recipientsHandler)
+	
+	// Health check endpoint (no auth required)
+	mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		if _, err := w.Write([]byte(`{"status":"healthy","service":"beerbot-backend"}`)); err != nil {
+			log.Printf("health check write error: %v", err)
+		}
+	})
+
 	srv := &http.Server{Addr: *addr, Handler: mux}
 	go func() {
 		log.Printf("http listening on %s", *addr)
