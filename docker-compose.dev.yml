@@ -1,0 +1,12 @@
+
+version: '3.8'
+services:
+  backend:
+    container_name: beerbot_backend_dev
+    build:
+      context: ./bot
+    volumes:
+      - ./bot/data:/data
+    ports:
+      - "8080:8080"
+    restart: unless-stopped

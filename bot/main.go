@@ -6,16 +6,15 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	stdlog "log"
+	"log"
 	"net/http"
 	"os"
 	"os/signal"
-	"syscall"
-	"time"
-
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
+	"time"
 
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/prometheus/client_golang/prometheus"
@@ -48,53 +47,97 @@ func parseRelativeDate(dateStr string) (time.Time, error) {
 	}
 }
 
-func parseDateRange(dateStr string) (time.Time, time.Time, error) {
-	if !strings.HasPrefix(dateStr, "-") {
-		t, err := time.Parse("2006-01-02", dateStr)
+// parseDateRangeFromParams parses day=, start=, end= from query params. If only day is set, returns that day. If start/end are set, returns the range. If none, returns error.
+func parseDateRangeFromParams(r *http.Request) (time.Time, time.Time, error) {
+	day := r.URL.Query().Get("day")
+	startStr := r.URL.Query().Get("start")
+	endStr := r.URL.Query().Get("end")
+
+	layout := "2006-01-02"
+	if day != "" {
+		t, err := time.Parse(layout, day)
 		if err != nil {
 			return time.Time{}, time.Time{}, err
 		}
 		return t, t, nil
 	}
-
-	t, err := parseRelativeDate(dateStr)
-	if err != nil {
-		return time.Time{}, time.Time{}, err
+	if startStr != "" && endStr != "" {
+		start, err1 := time.Parse(layout, startStr)
+		end, err2 := time.Parse(layout, endStr)
+		if err1 != nil || err2 != nil {
+			return time.Time{}, time.Time{}, fmt.Errorf("invalid start or end date")
+		}
+		return start, end, nil
 	}
-
-	return t, time.Now(), nil
+	return time.Time{}, time.Time{}, fmt.Errorf("must provide either day=YYYY-MM-DD or start=YYYY-MM-DD&end=YYYY-MM-DD")
 }
 
 func main() {
-	var (
-		dbPath    = flag.String("db", "./data/bot.db", "sqlite database path")
-		botToken  = flag.String("bot-token", "", "slack bot token (xoxb-...)")
-		appToken  = flag.String("app-token", "", "slack app-level token (xapp-...)")
-		channelID = flag.String("channel", "", "channel id to monitor")
-		addr      = flag.String("addr", ":8080", "health/metrics listen address")
-		maxPerDay = flag.Int("max-per-day", 10, "max beers a user may give per day")
-		apiToken  = flag.String("api-token", "", "api token for authentication")
-	)
+	emoji := ":beer:"
+	if env := os.Getenv("EMOJI"); env != "" {
+		emoji = env
+	}
+	dbPath := flag.String("db", os.Getenv("DB_PATH"), "sqlite database path")
+	botToken := flag.String("bot-token", os.Getenv("BOT_TOKEN"), "slack bot token (xoxb-...)")
+	appToken := flag.String("app-token", os.Getenv("APP_TOKEN"), "slack app-level token (xapp-...)")
+	channelID := flag.String("channel", os.Getenv("CHANNEL"), "channel id to monitor")
+	apiToken := flag.String("api-token", os.Getenv("API_TOKEN"), "api token for authentication")
+
+	addrDefault := ":8080"
+	if env := os.Getenv("ADDR"); env != "" {
+		addrDefault = env
+	}
+	addr := flag.String("addr", addrDefault, "health/metrics listen address")
+
+	maxPerDayDefault := 10
+	if env := os.Getenv("MAX_PER_DAY"); env != "" {
+		if v, err := strconv.Atoi(env); err == nil {
+			maxPerDayDefault = v
+		}
+	}
+	maxPerDay := flag.Int("max-per-day", maxPerDayDefault, "max beers a user may give per day")
 	flag.Parse()
 
 	if *botToken == "" || *appToken == "" || *channelID == "" {
-		stdlog.Fatal("bot-token, app-token and channel must be provided via flags or env")
+		log.Fatal("bot-token, app-token and channel must be provided via flags or env (BOT_TOKEN, APP_TOKEN, CHANNEL)")
 	}
 
 	// open sqlite
-	if err := os.MkdirAll("./data", 0o755); err != nil {
-		stdlog.Fatalf("create data dir: %v", err)
+	log.Printf("[DEBUG] DB_PATH env: %s", os.Getenv("DB_PATH"))
+	log.Printf("[DEBUG] dbPath flag: %s", *dbPath)
+	dbDir := ""
+	dbFile := *dbPath
+	if idx := strings.LastIndex(dbFile, "/"); idx != -1 {
+		dbDir = dbFile[:idx]
 	}
-	db, err := sql.Open("sqlite3", *dbPath+"?_foreign_keys=1")
+	if dbDir != "" {
+		if _, err := os.Stat(dbDir); os.IsNotExist(err) {
+			log.Printf("[DEBUG] DB directory %s does not exist, creating...", dbDir)
+			if err := os.MkdirAll(dbDir, 0o755); err != nil {
+				log.Fatalf("[DEBUG] Failed to create DB directory: %v", err)
+			}
+		} else {
+			log.Printf("[DEBUG] DB directory %s exists", dbDir)
+		}
+	}
+	if _, err := os.Stat(dbFile); err == nil {
+		log.Printf("[DEBUG] DB file %s exists before init", dbFile)
+	} else {
+		log.Printf("[DEBUG] DB file %s does not exist before init", dbFile)
+	}
+	log.Printf("[DEBUG] Opening SQLite DB at path: %s", dbFile)
+	db, err := sql.Open("sqlite3", dbFile)
 	if err != nil {
-		stdlog.Fatalf("open db: %v", err)
+		log.Fatalf("open db: %v", err)
 	}
 	defer db.Close()
 
+	log.Printf("[DEBUG] Running DB migration...")
 	store, err := NewSQLiteStore(db)
 	if err != nil {
-		stdlog.Fatalf("init store: %v", err)
+		log.Fatalf("init store: %v", err)
 	}
+	log.Printf("[DEBUG] DB migration complete. DB file: %s", dbFile)
 
 	// init Slack client
 	client := slack.New(*botToken, slack.OptionAppLevelToken(*appToken))
@@ -125,14 +168,13 @@ func main() {
 	// REST API: given and received
 	givenHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		user := r.URL.Query().Get("user")
-		date := r.URL.Query().Get("date")
-		if user == "" || date == "" {
-			http.Error(w, "user and date required", http.StatusBadRequest)
+		if user == "" {
+			http.Error(w, "user required", http.StatusBadRequest)
 			return
 		}
-		start, end, err := parseDateRange(date)
+		start, end, err := parseDateRangeFromParams(r)
 		if err != nil {
-			http.Error(w, "invalid date format", http.StatusBadRequest)
+			http.Error(w, "invalid or missing date range: "+err.Error(), http.StatusBadRequest)
 			return
 		}
 		c, err := store.CountGivenInDateRange(user, start, end)
@@ -141,18 +183,18 @@ func main() {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(fmt.Sprintf(`{"user":"%s","date":"%s","given":%d}`, user, date, c)))
+		_, _ = w.Write([]byte(fmt.Sprintf(`{"user":"%s","start":"%s","end":"%s","given":%d}`,
+			user, start.Format("2006-01-02"), end.Format("2006-01-02"), c)))
 	})
 	receivedHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		user := r.URL.Query().Get("user")
-		date := r.URL.Query().Get("date")
 		if user == "" {
 			http.Error(w, "user required", http.StatusBadRequest)
 			return
 		}
-		start, end, err := parseDateRange(date)
+		start, end, err := parseDateRangeFromParams(r)
 		if err != nil {
-			http.Error(w, "invalid date format", http.StatusBadRequest)
+			http.Error(w, "invalid or missing date range: "+err.Error(), http.StatusBadRequest)
 			return
 		}
 		c, err := store.CountReceivedInDateRange(user, start, end)
@@ -161,7 +203,8 @@ func main() {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(fmt.Sprintf(`{"user":"%s","date":"%s","received":%d}`, user, date, c)))
+		_, _ = w.Write([]byte(fmt.Sprintf(`{"user":"%s","start":"%s","end":"%s","received":%d}`,
+			user, start.Format("2006-01-02"), end.Format("2006-01-02"), c)))
 	})
 	userHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		userID := r.URL.Query().Get("user")
@@ -174,7 +217,10 @@ func main() {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		response := map[string]string{"real_name": user.RealName}
+		response := map[string]string{
+			"real_name":     user.RealName,
+			"profile_image": user.Profile.Image192, // or Image72 for smaller, Image512 for larger
+		}
 		w.Header().Set("Content-Type", "application/json")
 		if err := json.NewEncoder(w).Encode(response); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -186,37 +232,37 @@ func main() {
 
 	// list of all givers
 	giversHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-	list, err := store.GetAllGivers()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(list); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-	}
-})
+		list, err := store.GetAllGivers()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(list); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+	})
 
-// list of all recipients
-recipientsHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-	list, err := store.GetAllRecipients()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(list); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-	}
-})
+	// list of all recipients
+	recipientsHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		list, err := store.GetAllRecipients()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(list); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+	})
 
-	mux.Handle("/api/givers", authMiddleware(*apiToken, giversHandler))
-	mux.Handle("/api/recipients", authMiddleware(*apiToken, recipientsHandler))
+	mux.Handle("/api/givers", giversHandler)
+	mux.Handle("/api/recipients", recipientsHandler)
 	srv := &http.Server{Addr: *addr, Handler: mux}
 	go func() {
-		stdlog.Printf("http listening on %s", *addr)
+		log.Printf("http listening on %s", *addr)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			stdlog.Fatalf("http failed: %v", err)
+			log.Fatalf("http failed: %v", err)
 		}
 	}()
 
@@ -237,7 +283,7 @@ recipientsHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Reques
 				socketClient.Ack(*evt.Request)
 				eventsAPIEvent, ok := evt.Data.(slackevents.EventsAPIEvent)
 				if !ok {
-					stdlog.Printf("unexpected event data type: %T", evt.Data)
+					log.Printf("unexpected event data type: %T", evt.Data)
 					continue
 				}
 				// Deduplicate based on the Events API envelope ID when available.
@@ -258,10 +304,10 @@ recipientsHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Reques
 								zlog.Debug().Str("subtype", ev.SubType).Str("channel", ev.Channel).Str("user", ev.User).Msg("ignoring message with subtype")
 								continue
 							}
-                        
+
 							// Debug: emit event envelope id, fallback event id, timestamp and raw event types
 							zlog.Debug().Str("envelope_id", envelopeID).Str("channel", ev.Channel).Str("user", ev.User).Str("ts", ev.TimeStamp).Msg("received message event (debug)")
-                        
+
 							// compute a stable event id for message events: prefer envelopeID if present,
 							// otherwise build one from channel|user|ts which is stable across redeliveries
 							eventID := envelopeID
@@ -283,23 +329,24 @@ recipientsHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Reques
 								}
 							}
 							// New logic: associate beers with the last seen mention
+
 							mentionRe := regexp.MustCompile(`<@([A-Z0-9]+)>`)
-							beerRe := regexp.MustCompile(`:beer:`)
+							emojiRe := regexp.MustCompile(regexp.QuoteMeta(emoji))
 
 							mentions := mentionRe.FindAllStringSubmatch(ev.Text, -1)
 							mentionIndices := mentionRe.FindAllStringSubmatchIndex(ev.Text, -1)
-							beerIndices := beerRe.FindAllStringIndex(ev.Text, -1)
+							emojiIndices := emojiRe.FindAllStringIndex(ev.Text, -1)
 
-							if len(mentions) == 0 || len(beerIndices) == 0 {
+							if len(mentions) == 0 || len(emojiIndices) == 0 {
 								continue
 							}
 
 							recipientBeers := make(map[string]int)
-							for _, beerIdx := range beerIndices {
+							for _, emojiIdx := range emojiIndices {
 								lastMentionIdx := -1
 								var recipientID string
 								for i, mentionIdx := range mentionIndices {
-									if beerIdx[0] > mentionIdx[1] { // beer is after mention
+									if emojiIdx[0] > mentionIdx[1] { // emoji is after mention
 										if mentionIdx[0] > lastMentionIdx {
 											lastMentionIdx = mentionIdx[0]
 											recipientID = mentions[i][1]
@@ -369,7 +416,7 @@ recipientsHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Reques
 					}
 				}
 			case socketmode.EventTypeHello:
-				stdlog.Printf("socketmode: hello")
+				log.Printf("socketmode: hello")
 			default:
 				// ignore others
 			}
@@ -379,13 +426,13 @@ recipientsHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Reques
 	// Start socketmode
 	go func() {
 		if err := socketClient.RunContext(ctx); err != nil {
-			stdlog.Printf("socketmode run: %v", err)
+			log.Printf("socketmode run: %v", err)
 		}
 	}()
 
 	select {
 	case <-sigs:
-		stdlog.Println("shutdown signal")
+		log.Println("shutdown signal")
 	case <-ctx.Done():
 	}
 
@@ -397,7 +444,6 @@ recipientsHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Reques
 }
 
 // parseSlackTimestamp parses Slack timestamps of the form "1234567890.123456"
-// and returns a time.Time preserving fractional seconds.
 func authMiddleware(apiToken string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		zlog.Debug().Str("apiToken", apiToken).Str("authHeader", r.Header.Get("Authorization")).Msg("auth middleware")
@@ -421,6 +467,8 @@ func authMiddleware(apiToken string, next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	})
 }
+
+// and returns a time.Time preserving fractional seconds.
 func parseSlackTimestamp(ts string) (time.Time, error) {
 	// Slack ts format: seconds[.fraction]
 	var secPart string

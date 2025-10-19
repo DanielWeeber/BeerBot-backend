@@ -1,48 +1,78 @@
 package main
 
 import (
-    "database/sql"
-    "fmt"
-    "strings"
-    "time"
+	"database/sql"
+	"fmt"
+	"strings"
+	"time"
 )
 
 type SQLiteStore struct {
-    db *sql.DB
+	db *sql.DB
 }
 
 func NewSQLiteStore(db *sql.DB) (*SQLiteStore, error) {
-    s := &SQLiteStore{db: db}
-    if err := s.migrate(); err != nil {
-        return nil, err
-    }
-    return s, nil
+	fmt.Printf("[DEBUG] NewSQLiteStore: db pointer: %v\n", db)
+	// Print actual SQLite DB file path
+	row := db.QueryRow("PRAGMA database_list;")
+	var seq int
+	var name, file string
+	if err := row.Scan(&seq, &name, &file); err == nil {
+		fmt.Printf("[DEBUG] SQLite DB file: %s\n", file)
+	} else {
+		fmt.Printf("[DEBUG] Could not get SQLite DB file: %v\n", err)
+	}
+	s := &SQLiteStore{db: db}
+	fmt.Printf("[DEBUG] NewSQLiteStore: starting migration\n")
+	if err := s.migrate(); err != nil {
+		fmt.Printf("[DEBUG] NewSQLiteStore: migration failed: %v\n", err)
+		return nil, err
+	}
+	fmt.Printf("[DEBUG] NewSQLiteStore: migration succeeded\n")
+	return s, nil
 }
 
 func (s *SQLiteStore) migrate() error {
-    // Ensure simple auxiliary tables exist
-    aux := []string{
-        `CREATE TABLE IF NOT EXISTS emoji_counts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id TEXT NOT NULL,
-            emoji TEXT NOT NULL,
-            count INTEGER NOT NULL DEFAULT 0,
-            UNIQUE(user_id, emoji)
-        );`,
-        `CREATE TABLE IF NOT EXISTS processed_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            event_id TEXT NOT NULL UNIQUE,
-            ts TEXT NOT NULL
-        );`,
-    }
-    for _, st := range aux {
-        if _, err := s.db.Exec(st); err != nil {
-            return fmt.Errorf("migrate exec: %w", err)
-        }
-    }
+	// Ensure simple auxiliary tables exist
+	aux := []string{
+		`CREATE TABLE IF NOT EXISTS emoji_counts (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			user_id TEXT NOT NULL,
+			emoji TEXT NOT NULL,
+			count INTEGER NOT NULL DEFAULT 0,
+			UNIQUE(user_id, emoji)
+		);`,
+		`CREATE TABLE IF NOT EXISTS processed_events (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			event_id TEXT NOT NULL UNIQUE,
+			ts TEXT NOT NULL
+		);`,
+	}
+	for _, st := range aux {
+		if _, err := s.db.Exec(st); err != nil {
+			return fmt.Errorf("migrate exec: %w", err)
+		}
+	}
+	// ...existing code...
+	// After beers table creation and schema validation, create indexes
+	indexStmts := []string{
+		`CREATE INDEX IF NOT EXISTS idx_beers_giver_id_ts_rfc ON beers (giver_id, ts_rfc);`,
+		`CREATE INDEX IF NOT EXISTS idx_beers_recipient_id_ts_rfc ON beers (recipient_id, ts_rfc);`,
+		`CREATE INDEX IF NOT EXISTS idx_beers_emoji_ts_rfc ON beers (ts_rfc);`,
+		`CREATE INDEX IF NOT EXISTS idx_emoji_counts_user_id_emoji ON emoji_counts (user_id, emoji);`,
+	}
+	// Only run index creation if beers table exists now
+	var beersExists int
+	if err := s.db.QueryRow(`SELECT COUNT(1) FROM sqlite_master WHERE type='table' AND name='beers'`).Scan(&beersExists); err == nil && beersExists > 0 {
+		for _, st := range indexStmts {
+			if _, err := s.db.Exec(st); err != nil {
+				return fmt.Errorf("migrate index exec: %w", err)
+			}
+		}
+	}
 
-    // Desired beers table create statement
-    desiredCreate := `CREATE TABLE beers (
+	// Desired beers table create statement
+	desiredCreate := `CREATE TABLE beers (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             giver_id TEXT NOT NULL,
             recipient_id TEXT NOT NULL,
@@ -52,101 +82,101 @@ func (s *SQLiteStore) migrate() error {
             UNIQUE (giver_id, recipient_id, ts)
         );`
 
-    // If beers table doesn't exist, create it with the desired schema
-    var exists int
-    if err := s.db.QueryRow(`SELECT COUNT(1) FROM sqlite_master WHERE type='table' AND name='beers'`).Scan(&exists); err != nil {
-        return fmt.Errorf("migrate check beers exists: %w", err)
-    }
-    if exists == 0 {
-        if _, err := s.db.Exec(desiredCreate); err != nil {
-            return fmt.Errorf("migrate create beers: %w", err)
-        }
-        return nil
-    }
+	// If beers table doesn't exist, create it with the desired schema
+	var exists int
+	if err := s.db.QueryRow(`SELECT COUNT(1) FROM sqlite_master WHERE type='table' AND name='beers'`).Scan(&exists); err != nil {
+		return fmt.Errorf("migrate check beers exists: %w", err)
+	}
+	if exists == 0 {
+		if _, err := s.db.Exec(desiredCreate); err != nil {
+			return fmt.Errorf("migrate create beers: %w", err)
+		}
+		return nil
+	}
 
-    // beers table exists: ensure required columns and constraints
-    // collect existing columns
-    cols := map[string]bool{}
-    rows, err := s.db.Query(`PRAGMA table_info(beers);`)
-    if err != nil {
-        return fmt.Errorf("migrate pragma: %w", err)
-    }
-    defer rows.Close()
-    for rows.Next() {
-        var cid int
-        var name string
-        var ctype string
-        var notnull int
-        var dflt sql.NullString
-        var pk int
-        if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
-            return fmt.Errorf("migrate scan pragma: %w", err)
-        }
-        cols[name] = true
-    }
+	// beers table exists: ensure required columns and constraints
+	// collect existing columns
+	cols := map[string]bool{}
+	rows, err := s.db.Query(`PRAGMA table_info(beers);`)
+	if err != nil {
+		return fmt.Errorf("migrate pragma: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name string
+		var ctype string
+		var notnull int
+		var dflt sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return fmt.Errorf("migrate scan pragma: %w", err)
+		}
+		cols[name] = true
+	}
 
-    // Add missing columns non-destructively
-    if !cols["ts_rfc"] {
-        if _, err := s.db.Exec(`ALTER TABLE beers ADD COLUMN ts_rfc DATETIME;`); err != nil {
-            return fmt.Errorf("migrate add ts_rfc: %w", err)
-        }
-    }
-    if !cols["count"] {
-        if _, err := s.db.Exec(`ALTER TABLE beers ADD COLUMN count INTEGER NOT NULL DEFAULT 1;`); err != nil {
-            return fmt.Errorf("migrate add count: %w", err)
-        }
-    }
+	// Add missing columns non-destructively
+	if !cols["ts_rfc"] {
+		if _, err := s.db.Exec(`ALTER TABLE beers ADD COLUMN ts_rfc DATETIME;`); err != nil {
+			return fmt.Errorf("migrate add ts_rfc: %w", err)
+		}
+	}
+	if !cols["count"] {
+		if _, err := s.db.Exec(`ALTER TABLE beers ADD COLUMN count INTEGER NOT NULL DEFAULT 1;`); err != nil {
+			return fmt.Errorf("migrate add count: %w", err)
+		}
+	}
 
-    // Ensure UNIQUE(giver_id, recipient_id, ts) exists. SQLite doesn't support adding
-    // UNIQUE constraints via ALTER, so if it's missing we recreate the table non-destructively
-    // by aggregating existing rows into the desired schema.
-    var createSQL sql.NullString
-    if err := s.db.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='beers'`).Scan(&createSQL); err != nil {
-        return fmt.Errorf("migrate select create sql: %w", err)
-    }
-    if !createSQL.Valid || !strings.Contains(strings.ToUpper(createSQL.String), "UNIQUE") {
-        // Recreate table: create beers_new, copy aggregated data, swap tables
-        tx, err := s.db.Begin()
-        if err != nil {
-            return fmt.Errorf("migrate begin tx: %w", err)
-        }
-        // create new table with desired schema
-        if _, err := tx.Exec(desiredCreate); err != nil {
-            tx.Rollback()
-            return fmt.Errorf("migrate create beers_new: %w", err)
-        }
-        // copy aggregated data into beers (treat missing count as 1 and compute ts_rfc if NULL)
-        copyStmt := `INSERT INTO beers (giver_id, recipient_id, ts, ts_rfc, count)
+	// Ensure UNIQUE(giver_id, recipient_id, ts) exists. SQLite doesn't support adding
+	// UNIQUE constraints via ALTER, so if it's missing we recreate the table non-destructively
+	// by aggregating existing rows into the desired schema.
+	var createSQL sql.NullString
+	if err := s.db.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='beers'`).Scan(&createSQL); err != nil {
+		return fmt.Errorf("migrate select create sql: %w", err)
+	}
+	if !createSQL.Valid || !strings.Contains(strings.ToUpper(createSQL.String), "UNIQUE") {
+		// Recreate table: create beers_new, copy aggregated data, swap tables
+		tx, err := s.db.Begin()
+		if err != nil {
+			return fmt.Errorf("migrate begin tx: %w", err)
+		}
+		// create new table with desired schema
+		if _, err := tx.Exec(desiredCreate); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("migrate create beers_new: %w", err)
+		}
+		// copy aggregated data into beers (treat missing count as 1 and compute ts_rfc if NULL)
+		copyStmt := `INSERT INTO beers (giver_id, recipient_id, ts, ts_rfc, count)
             SELECT giver_id, recipient_id, ts,
                 COALESCE(ts_rfc, datetime(substr(ts,1,instr(ts,'.')-1), 'unixepoch')),
                 COALESCE(SUM(count), COUNT(1))
             FROM (SELECT * FROM beers) GROUP BY giver_id, recipient_id, ts;`
-        if _, err := tx.Exec(copyStmt); err != nil {
-            tx.Rollback()
-            return fmt.Errorf("migrate copy aggregated: %w", err)
-        }
-        // drop old table and keep the new one under the original name
-        if _, err := tx.Exec(`DROP TABLE IF EXISTS beers;`); err != nil {
-            tx.Rollback()
-            return fmt.Errorf("migrate drop old beers: %w", err)
-        }
-        if _, err := tx.Exec(`ALTER TABLE beers RENAME TO beers_old;`); err == nil {
-            // if rename succeeded unexpectedly, try to rename back
-        }
-        // Note: desiredCreate created a table named 'beers' already; we dropped old table, so commit.
-        if err := tx.Commit(); err != nil {
-            return fmt.Errorf("migrate commit recreate: %w", err)
-        }
-    }
+		if _, err := tx.Exec(copyStmt); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("migrate copy aggregated: %w", err)
+		}
+		// drop old table and keep the new one under the original name
+		if _, err := tx.Exec(`DROP TABLE IF EXISTS beers;`); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("migrate drop old beers: %w", err)
+		}
+		if _, err := tx.Exec(`ALTER TABLE beers RENAME TO beers_old;`); err == nil {
+			// if rename succeeded unexpectedly, try to rename back
+		}
+		// Note: desiredCreate created a table named 'beers' already; we dropped old table, so commit.
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("migrate commit recreate: %w", err)
+		}
+	}
 
-    return nil
+	return nil
 }
 
 // MarkEventProcessed records that an external event (by event_id) has been
 // handled. Returns nil if inserted; if the event already exists, returns nil as well.
 func (s *SQLiteStore) MarkEventProcessed(eventID string, ts time.Time) error {
-    _, err := s.db.Exec(`INSERT OR IGNORE INTO processed_events (event_id, ts) VALUES (?, ?);`, eventID, ts.UTC().Format(time.RFC3339))
-    return err
+	_, err := s.db.Exec(`INSERT OR IGNORE INTO processed_events (event_id, ts) VALUES (?, ?);`, eventID, ts.UTC().Format(time.RFC3339))
+	return err
 }
 
 // TryMarkEventProcessed attempts to insert the event id into processed_events.
@@ -154,64 +184,64 @@ func (s *SQLiteStore) MarkEventProcessed(eventID string, ts time.Time) error {
 // (false, nil) if the event was already present (another process handled it),
 // or (false, err) on database error.
 func (s *SQLiteStore) TryMarkEventProcessed(eventID string, ts time.Time) (bool, error) {
-    res, err := s.db.Exec(`INSERT OR IGNORE INTO processed_events (event_id, ts) VALUES (?, ?);`, eventID, ts.UTC().Format(time.RFC3339))
-    if err != nil {
-        return false, err
-    }
-    n, err := res.RowsAffected()
-    if err != nil {
-        return false, err
-    }
-    return n > 0, nil
+	res, err := s.db.Exec(`INSERT OR IGNORE INTO processed_events (event_id, ts) VALUES (?, ?);`, eventID, ts.UTC().Format(time.RFC3339))
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
 }
 
 // IsEventProcessed returns true if we've already processed the given event id.
 func (s *SQLiteStore) IsEventProcessed(eventID string) (bool, error) {
-    var id int
-    err := s.db.QueryRow(`SELECT id FROM processed_events WHERE event_id = ?`, eventID).Scan(&id)
-    if err == sql.ErrNoRows {
-        return false, nil
-    }
-    if err != nil {
-        return false, err
-    }
-    return true, nil
+	var id int
+	err := s.db.QueryRow(`SELECT id FROM processed_events WHERE event_id = ?`, eventID).Scan(&id)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (s *SQLiteStore) IncEmoji(userID, emoji string) error {
-    tx, err := s.db.Begin()
-    if err != nil {
-        return err
-    }
-    defer tx.Rollback()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
 
-    // try update
-    res, err := tx.Exec(`UPDATE emoji_counts SET count = count + 1 WHERE user_id = ? AND emoji = ?`, userID, emoji)
-    if err != nil {
-        return err
-    }
-    n, err := res.RowsAffected()
-    if err != nil {
-        return err
-    }
-    if n == 0 {
-        if _, err := tx.Exec(`INSERT INTO emoji_counts(user_id, emoji, count) VALUES(?, ?, 1)`, userID, emoji); err != nil {
-            return err
-        }
-    }
-    return tx.Commit()
+	// try update
+	res, err := tx.Exec(`UPDATE emoji_counts SET count = count + 1 WHERE user_id = ? AND emoji = ?`, userID, emoji)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		if _, err := tx.Exec(`INSERT INTO emoji_counts(user_id, emoji, count) VALUES(?, ?, 1)`, userID, emoji); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *SQLiteStore) GetCount(userID, emoji string) (int, error) {
-    var c int
-    err := s.db.QueryRow(`SELECT count FROM emoji_counts WHERE user_id = ? AND emoji = ?`, userID, emoji).Scan(&c)
-    if err == sql.ErrNoRows {
-        return 0, nil
-    }
-    if err != nil {
-        return 0, err
-    }
-    return c, nil
+	var c int
+	err := s.db.QueryRow(`SELECT count FROM emoji_counts WHERE user_id = ? AND emoji = ?`, userID, emoji).Scan(&c)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	return c, nil
 }
 
 // AddBeer inserts a beer event (one record per beer)
@@ -221,27 +251,117 @@ func (s *SQLiteStore) GetCount(userID, emoji string) (int, error) {
 // AddBeer records a beer-gift event for a single message: it inserts or upserts
 // a row with the provided count keyed by the original Slack ts string (ts).
 func (s *SQLiteStore) AddBeer(giverID, recipientID string, slackTs string, t time.Time, count int) error {
-    _, err := s.db.Exec(`INSERT INTO beers (giver_id, recipient_id, ts, ts_rfc, count) VALUES (?, ?, ?, ?, ?) ON CONFLICT(giver_id, recipient_id, ts) DO UPDATE SET count = excluded.count`, giverID, recipientID, slackTs, t.UTC().Format(time.RFC3339), count)
-    return err
+	_, err := s.db.Exec(`INSERT INTO beers (giver_id, recipient_id, ts, ts_rfc, count) VALUES (?, ?, ?, ?, ?) ON CONFLICT(giver_id, recipient_id, ts) DO UPDATE SET count = excluded.count`, giverID, recipientID, slackTs, t.UTC().Format(time.RFC3339), count)
+	return err
 }
 
 // CountGivenInDateRange returns how many beers the giver gave in the given date range
 func (s *SQLiteStore) CountGivenInDateRange(giverID string, start time.Time, end time.Time) (int, error) {
+	// Use YYYY-MM-DD format for SQLite date() comparison
+	startStr := start.Format("2006-01-02")
+	endStr := end.Format("2006-01-02")
+
+	var debugRows1, debugRows2 *sql.Rows
+	var derr1, derr2 error
+
+	// Extra debug: print all rows for this date (ignoring giver_id)
+	debugRows1, derr1 = s.db.Query("SELECT giver_id, recipient_id, ts_rfc, substr(ts_rfc, 1, 10), count FROM beers WHERE substr(ts_rfc, 1, 10) = ?", startStr)
+	if derr1 == nil {
+		defer debugRows1.Close()
+		for debugRows1.Next() {
+			var g, r, tsrfc, d string
+			var cnt int
+			if err := debugRows1.Scan(&g, &r, &tsrfc, &d, &cnt); err == nil {
+				fmt.Printf("[DEBUG] AllRowsForDate: giver_id=%s recipient_id=%s ts_rfc=%s substr(ts_rfc,1,10)=%s count=%d\n", g, r, tsrfc, d, cnt)
+			}
+		}
+	} else {
+		fmt.Printf("[DEBUG] Could not query all rows for date: %v\n", derr1)
+	}
+
+	// Extra debug: print all rows for this giver_id (ignoring date)
+	debugRows2, derr2 = s.db.Query("SELECT giver_id, recipient_id, ts_rfc, substr(ts_rfc, 1, 10), count FROM beers WHERE giver_id = ?", giverID)
+	if derr2 == nil {
+		defer debugRows2.Close()
+		for debugRows2.Next() {
+			var g, r, tsrfc, d string
+			var cnt int
+			if err := debugRows2.Scan(&g, &r, &tsrfc, &d, &cnt); err == nil {
+				fmt.Printf("[DEBUG] AllRowsForGiver: giver_id=%s recipient_id=%s ts_rfc=%s substr(ts_rfc,1,10)=%s count=%d\n", g, r, tsrfc, d, cnt)
+			}
+		}
+	} else {
+		fmt.Printf("[DEBUG] Could not query all rows for giver: %v\n", derr2)
+	}
 	var c int
-	err := s.db.QueryRow(`SELECT COALESCE(SUM(count), 0) FROM beers WHERE giver_id = ? AND date(ts_rfc) BETWEEN date(?) AND date(?)`, giverID, start.UTC().Format(time.RFC3339), end.UTC().Format(time.RFC3339)).Scan(&c)
+
+	// Extra debug: print all rows for this date (ignoring giver_id)
+	if debugRows1, derr1 := s.db.Query("SELECT giver_id, recipient_id, ts_rfc, substr(ts_rfc, 1, 10), count FROM beers WHERE substr(ts_rfc, 1, 10) = ?", startStr); derr1 == nil {
+		defer debugRows1.Close()
+		for debugRows1.Next() {
+			var g, r, tsrfc, d string
+			var cnt int
+			if err := debugRows1.Scan(&g, &r, &tsrfc, &d, &cnt); err == nil {
+				fmt.Printf("[DEBUG] AllRowsForDate: giver_id=%s recipient_id=%s ts_rfc=%s substr(ts_rfc,1,10)=%s count=%d\n", g, r, tsrfc, d, cnt)
+			}
+		}
+	} else {
+		fmt.Printf("[DEBUG] Could not query all rows for date: %v\n", derr1)
+	}
+
+	// Extra debug: print all rows for this giver_id (ignoring date)
+	if debugRows2, derr2 := s.db.Query("SELECT giver_id, recipient_id, ts_rfc, substr(ts_rfc, 1, 10), count FROM beers WHERE giver_id = ?", giverID); derr2 == nil {
+		defer debugRows2.Close()
+		for debugRows2.Next() {
+			var g, r, tsrfc, d string
+			var cnt int
+			if err := debugRows2.Scan(&g, &r, &tsrfc, &d, &cnt); err == nil {
+				fmt.Printf("[DEBUG] AllRowsForGiver: giver_id=%s recipient_id=%s ts_rfc=%s substr(ts_rfc,1,10)=%s count=%d\n", g, r, tsrfc, d, cnt)
+			}
+		}
+	} else {
+		fmt.Printf("[DEBUG] Could not query all rows for giver: %v\n", derr2)
+	}
+
+	query := `SELECT COALESCE(SUM(count), 0) FROM beers WHERE giver_id = ? AND substr(ts_rfc, 1, 10) BETWEEN ? AND ?`
+	fmt.Printf("[DEBUG] CountGivenInDateRange: giverID=%s, start=%s, end=%s\n", giverID, startStr, endStr)
+	// Extra debug: print all rows for this user and date
+	debugRows, derr := s.db.Query("SELECT giver_id, recipient_id, ts_rfc, date(ts_rfc), count FROM beers WHERE giver_id = ? AND date(ts_rfc) = date(?)", giverID, startStr)
+	if derr == nil {
+		defer debugRows.Close()
+		for debugRows.Next() {
+			var g, r, tsrfc, d string
+			var cnt int
+			if err := debugRows.Scan(&g, &r, &tsrfc, &d, &cnt); err == nil {
+				fmt.Printf("[DEBUG] Row: giver_id=%s recipient_id=%s ts_rfc=%s date(ts_rfc)=%s count=%d\n", g, r, tsrfc, d, cnt)
+			}
+		}
+	} else {
+		fmt.Printf("[DEBUG] Could not query debug rows: %v\n", derr)
+	}
+	err := s.db.QueryRow(query, giverID, startStr, endStr).Scan(&c)
 	if err != nil {
+		fmt.Printf("[DEBUG] CountGivenInDateRange ERROR: %v\n", err)
 		return 0, err
 	}
+	fmt.Printf("[DEBUG] CountGivenInDateRange RESULT: %d\n", c)
 	return c, nil
 }
 
 // CountReceivedInDateRange returns total beers received by recipient in the given date range
 func (s *SQLiteStore) CountReceivedInDateRange(recipientID string, start time.Time, end time.Time) (int, error) {
 	var c int
-	err := s.db.QueryRow(`SELECT COALESCE(SUM(count), 0) FROM beers WHERE recipient_id = ? AND date(ts_rfc) BETWEEN date(?) AND date(?)`, recipientID, start.UTC().Format(time.RFC3339), end.UTC().Format(time.RFC3339)).Scan(&c)
+	// Use YYYY-MM-DD format for SQLite date() comparison
+	query := `SELECT COALESCE(SUM(count), 0) FROM beers WHERE recipient_id = ? AND substr(ts_rfc, 1, 10) BETWEEN ? AND ?`
+	startStr := start.Format("2006-01-02")
+	endStr := end.Format("2006-01-02")
+	fmt.Printf("[DEBUG] CountReceivedInDateRange: recipientID=%s, start=%s, end=%s\n", recipientID, startStr, endStr)
+	err := s.db.QueryRow(query, recipientID, startStr, endStr).Scan(&c)
 	if err != nil {
+		fmt.Printf("[DEBUG] CountReceivedInDateRange ERROR: %v\n", err)
 		return 0, err
 	}
+	fmt.Printf("[DEBUG] CountReceivedInDateRange RESULT: %d\n", c)
 	return c, nil
 }
 
@@ -268,36 +388,36 @@ func (s *SQLiteStore) CountReceived(recipientID string, date string) (int, error
 
 // GetAllGivers returns the list of all distinct user IDs that have given at least one beer.
 func (s *SQLiteStore) GetAllGivers() ([]string, error) {
-    rows, err := s.db.Query(`SELECT DISTINCT giver_id FROM beers`)
-    if err != nil {
-        return nil, err
-    }
-    defer rows.Close()
-    var out []string
-    for rows.Next() {
-        var id string
-        if err := rows.Scan(&id); err != nil {
-            return nil, err
-        }
-        out = append(out, id)
-    }
-    return out, nil
+	rows, err := s.db.Query(`SELECT DISTINCT giver_id FROM beers`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, nil
 }
 
 // GetAllRecipients returns the list of all distinct recipient user IDs that have received at least one beer.
 func (s *SQLiteStore) GetAllRecipients() ([]string, error) {
-    rows, err := s.db.Query(`SELECT DISTINCT recipient_id FROM beers`)
-    if err != nil {
-        return nil, err
-    }
-    defer rows.Close()
-    var out []string
-    for rows.Next() {
-        var id string
-        if err := rows.Scan(&id); err != nil {
-            return nil, err
-        }
-        out = append(out, id)
-    }
-    return out, nil
+	rows, err := s.db.Query(`SELECT DISTINCT recipient_id FROM beers`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, nil
 }

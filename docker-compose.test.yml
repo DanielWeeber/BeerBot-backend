@@ -1,0 +1,10 @@
+version: '3.8'
+services:
+  bot-test:
+    container_name: beerbot_test
+    build:
+      context: ./bot
+      target: test
+    volumes:
+      - ./bot:/src
+      - ./bot/data:/data

@@ -1,0 +1,10 @@
+
+version: '3.8'
+services:
+  bot:
+    container_name: beerbot_backend
+    build: ./bot
+    volumes:
+      - ./bot/data:/data
+    ports:
+      - "8080:8080"
