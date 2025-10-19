@@ -73,7 +73,7 @@ func parseDateRangeFromParams(r *http.Request) (time.Time, time.Time, error) {
 }
 
 func main() {
-	emoji := ":beer:"
+	emoji := ":beer:" //nolint:typecheck // Used in regexp compilation below
 	if env := os.Getenv("EMOJI"); env != "" {
 		emoji = env
 	}
@@ -95,7 +95,7 @@ func main() {
 			maxPerDayDefault = v
 		}
 	}
-	maxPerDay := flag.Int("max-per-day", maxPerDayDefault, "max beers a user may give per day")
+	maxPerDay := flag.Int("max-per-day", maxPerDayDefault, "max beers a user may give per day") //nolint:typecheck // Used in daily limit checks
 	flag.Parse()
 
 	if *botToken == "" || *appToken == "" || *channelID == "" {
@@ -288,7 +288,7 @@ func main() {
 				}
 				// Deduplicate based on the Events API envelope ID when available.
 				// Try to get a stable envelope id from the socketmode event request
-				envelopeID := ""
+				envelopeID := "" //nolint:typecheck // Used in event ID generation below
 				if evt.Request != nil && evt.Request.EnvelopeID != "" {
 					envelopeID = evt.Request.EnvelopeID
 				}
