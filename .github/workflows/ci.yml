@@ -9,6 +9,9 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./bot
     steps:
       - uses: actions/checkout@v4
       - name: Set up Go
@@ -18,11 +21,12 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update && sudo apt-get install -y libsqlite3-dev
-          go get ./...
+          go mod download
       - name: Run unit tests
         run: go test ./...
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v4
         with:
           version: v1.59.0
-          args: run --timeout 3m
+          working-directory: ./bot
+          args: --timeout 3m
