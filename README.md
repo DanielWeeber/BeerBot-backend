@@ -19,27 +19,34 @@ BeerBot Backend is the core service that handles Slack events, processes beer tr
 ## ✨ Features
 
 ### Core Functionality
+
 - **🎯 Smart Beer Detection**: Automatically detects beer emojis and user mentions in Slack messages
 - **📊 Advanced Analytics**: Track beer giving/receiving with flexible date range queries
 - **👥 User Management**: Complete user profile integration with Slack avatars
 - **🔄 Real-time Processing**: Socket mode integration for instant event handling
 
 ### Technical Features
+
 - **🛡️ Secure API**: Bearer token authentication for all endpoints
 - **📈 Performance Optimized**: SQLite with custom indexing for fast queries
 - **🐳 Docker Ready**: Multiple environment configurations (dev, test, prod)
 - **🔍 Event Deduplication**: Prevents duplicate processing of Slack events
-- **📅 Flexible Date Queries**: Support for relative dates (-1d, -1w, -1m, -1y) and ranges
+- **🧾 Structured Logging**: Zerolog-based logging with configurable `LOG_LEVEL`
+- **📊 Prometheus Metrics**: Built-in `/metrics` endpoint with HTTP, Slack and processing metrics
 
 ## 🏗️ Architecture
 
 ### Core Components
-- **Event Handler**: Processes Slack socket mode events
-- **Store Layer**: SQLite database with optimized queries and migrations
-- **REST API**: HTTP endpoints for frontend integration
-- **Authentication**: Middleware for API security
+
+- **Event Handler** (`bot/slack.go`): Processes Slack Socket Mode events, deduplication and limits
+- **HTTP Layer** (`bot/http_handlers.go`): REST API endpoints and auth middleware
+- **Metrics** (`bot/metrics.go`): Prometheus collectors and helper functions
+- **Application Wiring** (`bot/main.go`): Flags/env, logging, server startup, Slack wiring
+- **Store Layer** (`bot/store.go`): SQLite database, migrations and queries
+- **Authentication**: Bearer middleware for API security
 
 ### Database Schema
+
 - `beers`: Beer transaction records with giver/recipient tracking
 - `processed_events`: Event deduplication table
 - `emoji_counts`: User emoji statistics (extensible for future features)
@@ -47,6 +54,7 @@ BeerBot Backend is the core service that handles Slack events, processes beer tr
 ## 🚀 Quick Start
 
 ### Prerequisites
+
 - [Docker](https://www.docker.com/) & [Docker Compose](https://docs.docker.com/compose/)
 - [Go 1.21+](https://golang.org/) (for development)
 - Slack workspace with admin permissions
@@ -54,6 +62,7 @@ BeerBot Backend is the core service that handles Slack events, processes beer tr
 ### 🐳 Using Docker Images
 
 **Quick Start with Docker Hub:**
+
 ```bash
 # Pull and run the latest image
 docker run -d \
@@ -67,6 +76,7 @@ docker run -d \
 ```
 
 **Docker Compose Example:**
+
 ```yaml
 version: '3.8'
 services:
@@ -83,6 +93,7 @@ services:
       CHANNEL: "C1234567890"  # Optional: specific channel
       EMOJI: ":beer:"         # Optional: default emoji
       MAX_PER_DAY: "10"       # Optional: daily limit
+      LOG_LEVEL: "warn"       # Optional: trace|debug|info|warn|error|fatal|panic
     volumes:
       - beerbot-data:/data
     healthcheck:
@@ -98,6 +109,7 @@ volumes:
 ### Installation from Source
 
 1. **Clone the repository:**
+
    ```bash
    git clone https://github.com/DanielWeeber/BeerBot-backend.git
    cd BeerBot-backend
@@ -113,11 +125,13 @@ volumes:
 
 3. **Configure Environment:**
    Create `docker-compose.override.yml` from the example:
+
    ```bash
    cp docker-compose.override.yml.example docker-compose.override.yml
    ```
-   
+
    Edit the file with your Slack tokens:
+
    ```yaml
    version: '3.8'
    services:
@@ -131,6 +145,7 @@ volumes:
    ```
 
 4. **Launch the service:**
+
    ```bash
    # Development with hot-reload
    docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
@@ -163,6 +178,7 @@ The bot automatically:
 ### REST API
 
 #### Authentication
+
 All API endpoints require Bearer token authentication:
 
 ```bash
@@ -172,7 +188,7 @@ curl -H "Authorization: Bearer YOUR_API_TOKEN" \
 
 #### Endpoints
 
-**� Beer Statistics**
+**🍺 Beer Statistics**
 
 ```http
 GET /api/given?user={user_id}&start={date}&end={date}
@@ -180,11 +196,12 @@ GET /api/received?user={user_id}&start={date}&end={date}
 ```
 
 **Date Formats:**
-- Specific date: `2024-10-19`
-- Relative: `-7d` (7 days ago), `-1m` (1 month), `-1y` (1 year)
-- Range: `start=2024-10-01&end=2024-10-31`
+
+- Specific date: `day=YYYY-MM-DD`
+- Range: `start=YYYY-MM-DD&end=YYYY-MM-DD`
 
 **Example Responses:**
+
 ```json
 {
   "user": "U1234567890",
@@ -201,6 +218,7 @@ GET /api/user?user={user_id}
 ```
 
 Response includes Slack profile data:
+
 ```json
 {
   "real_name": "John Doe",
@@ -226,17 +244,20 @@ GET /api/health
 ### Local Setup
 
 1. **Install Go dependencies:**
+
    ```bash
    cd bot && go mod tidy
    ```
 
 2. **Run locally:**
+
    ```bash
    cd bot
    go run . -addr=:8080 -db=/tmp/beerbot.db
    ```
 
 3. **Run tests:**
+
    ```bash
    go test ./...
    ```
@@ -263,6 +284,22 @@ docker-compose -f docker-compose.test.yml up --build
 | `MAX_PER_DAY` | ❌ | `10` | Maximum beers per user per day |
 | `DB_PATH` | ❌ | `/data/beerbot.db` | SQLite database file path |
 | `EMOJI` | ❌ | `:beer:` | Emoji to track (can be Unicode or Slack format) |
+| `LOG_LEVEL` | ❌ | `warn` | Zerolog level: trace, debug, info, warn, error, fatal, panic |
+
+### Command-line Flags (equivalents)
+
+The service also supports flags equivalent to environment variables:
+
+```bash
+go run ./bot \
+  -db=/data/beerbot.db \
+  -bot-token=$BOT_TOKEN \
+  -app-token=$APP_TOKEN \
+  -channel=$CHANNEL \
+  -api-token=$API_TOKEN \
+  -addr=:8080 \
+  -max-per-day=10
+```
 
 ## 📦 Deployment
 
@@ -334,6 +371,7 @@ BOT_TOKEN=xoxb-... APP_TOKEN=xapp-... ./beerbot
 ### Slack App Setup
 
 Required OAuth Scopes:
+
 - `channels:history` - Read channel messages
 - `groups:history` - Read private channel messages  
 - `im:history` - Read direct messages
@@ -342,11 +380,13 @@ Required OAuth Scopes:
 - `chat:write` - Send messages (for future features)
 
 Required App-Level Token Scopes:
+
 - `connections:write` - Socket Mode connection
 
 ### Database
 
 The application automatically creates and migrates the SQLite database. Key features:
+
 - **Automatic migrations**: Schema updates on startup
 - **Optimized indexing**: Fast queries on user/date combinations  
 - **Event deduplication**: Prevents duplicate processing
@@ -357,6 +397,7 @@ The application automatically creates and migrates the SQLite database. Key feat
 ### Common Issues
 
 **Connection Issues:**
+
 ```bash
 # Check Slack connectivity
 curl -H "Authorization: Bearer $BOT_TOKEN" https://slack.com/api/auth.test
@@ -366,6 +407,7 @@ docker-compose logs bot
 ```
 
 **Database Issues:**
+
 ```bash
 # Reset database
 rm -f ./bot/data/beerbot.db
@@ -376,10 +418,33 @@ sqlite3 ./bot/data/beerbot.db "PRAGMA integrity_check;"
 ```
 
 **API Authentication:**
+
 ```bash
 # Test API endpoint
 curl -H "Authorization: Bearer YOUR_API_TOKEN" \
      http://localhost:8080/api/health
+```
+
+## 📈 Observability
+
+- **Logging**: Structured via Zerolog. Set `LOG_LEVEL` to control verbosity.
+  - Default: `warn`. Options: `trace`, `debug`, `info`, `warn`, `error`, `fatal`, `panic`.
+- **Metrics**: Exposed at `/metrics` (Prometheus format). Included collectors:
+  - `bwm_messages_processed_total{channel}`
+  - `beer_message_outcomes_total{channel,reason}` (e.g., `subtype`, `no_mentions`, `limit_reached`, `stored`)
+  - `http_requests_total{path,method,status}`
+  - `http_request_duration_seconds{path,method,status}`
+  - `slack_reconnects_total`
+  - `slack_connected` (gauge)
+
+Example scrape config:
+
+```yaml
+scrape_configs:
+  - job_name: 'beerbot'
+    static_configs:
+      - targets: ['beerbot-backend:8080']
+    metrics_path: /metrics
 ```
 
 ## 🤝 Contributing
@@ -393,6 +458,7 @@ We welcome contributions! Please see our contributing guidelines:
 5. Open a Pull Request
 
 ### Code Standards
+
 - Follow Go best practices and formatting (`go fmt`)
 - Add tests for new functionality
 - Update documentation for API changes
