@@ -4,6 +4,7 @@ import (
     "net/http"
     "strconv"
     "time"
+    "sync"
 
     "github.com/prometheus/client_golang/prometheus"
 )
@@ -55,16 +56,20 @@ var (
         },
         []string{"channel", "reason"},
     )
+    // metricsOnce ensures InitMetrics registers collectors only once.
+    metricsOnce sync.Once
 )
 
-// InitMetrics registers all collectors. Call once at startup.
+// InitMetrics registers all collectors (idempotent and thread-safe).
 func InitMetrics() {
-    prometheus.MustRegister(messagesProcessed)
-    prometheus.MustRegister(httpRequestsTotal)
-    prometheus.MustRegister(httpRequestDuration)
-    prometheus.MustRegister(slackReconnectsTotal)
-    prometheus.MustRegister(slackConnected)
-    prometheus.MustRegister(beerMessageOutcomes)
+    metricsOnce.Do(func() {
+        prometheus.MustRegister(messagesProcessed)
+        prometheus.MustRegister(httpRequestsTotal)
+        prometheus.MustRegister(httpRequestDuration)
+        prometheus.MustRegister(slackReconnectsTotal)
+        prometheus.MustRegister(slackConnected)
+        prometheus.MustRegister(beerMessageOutcomes)
+    })
 }
 
 // IncMessagesProcessed increments the processed message counter for a channel.
