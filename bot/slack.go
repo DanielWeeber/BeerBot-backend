@@ -18,9 +18,10 @@ import (
 
 // SlackConnectionManager manages the Slack socket mode connection, including automatic
 // reconnection using an exponential backoff strategy. The struct is safe for concurrent
-// use: mutable fields (such as connection state) are protected by an internal sync.RWMutex,
-// while immutable fields (client and socketClient) are set during initialization and are safe
-// for concurrent read access without locking.
+// use: mutable fields (such as connection state and the socket client reference) are
+// protected by an internal sync.RWMutex. The Slack Web API client (`client`) is created
+// once and treated as immutable, while the Socket Mode client (`socketClient`) may be
+// replaced on reconnect under the write lock.
 type SlackConnectionManager struct {
     client         *slack.Client
     socketClient   *socketmode.Client
@@ -73,11 +74,27 @@ func (scm *SlackConnectionManager) GetClient() *slack.Client {
     return scm.client
 }
 
-// GetSocketClient returns the socket mode client
+// GetSocketClient returns the current Socket Mode client pointer.
+//
+// Concurrency: the returned value should be treated as a snapshot. The underlying
+// `socketClient` may be replaced during reconnection under the manager's write lock.
+// Callers should capture the returned pointer and avoid assuming it remains current
+// after the call. This method uses a read lock only to read the pointer safely. Prefer
+// using WithSocketClient for snapshot usage.
 func (scm *SlackConnectionManager) GetSocketClient() *socketmode.Client {
     scm.mu.RLock()
     defer scm.mu.RUnlock()
     return scm.socketClient
+}
+
+// WithSocketClient captures the current Socket Mode client and invokes fn with it.
+// The captured pointer is a snapshot and may be stale if a reconnect occurs later.
+// If there is no current client (nil), fn is not called.
+func (scm *SlackConnectionManager) WithSocketClient(fn func(*socketmode.Client)) {
+    sc := scm.GetSocketClient()
+    if sc != nil && fn != nil {
+        fn(sc)
+    }
 }
 
 // TestConnection tests the Slack API connection
@@ -135,14 +152,15 @@ func (scm *SlackConnectionManager) StartWithReconnection(ctx context.Context, ev
 
                 // Run the socket mode client
                 zlog.Info().Msg("Starting Slack socket mode client...")
-                sc := scm.GetSocketClient()
-                if err := sc.RunContext(ctx); err != nil {
+                var runErr error
+                scm.WithSocketClient(func(sc *socketmode.Client) { runErr = sc.RunContext(ctx) })
+                if runErr != nil {
                     scm.setConnected(false)
                     if ctx.Err() != nil {
-                        zlog.Info().Err(err).Msg("Socket mode client stopped due to context cancellation")
+                        zlog.Info().Err(runErr).Msg("Socket mode client stopped due to context cancellation")
                         return
                     } else {
-                        zlog.Error().Err(err).Msg("Socket mode client error, will reconnect")
+                        zlog.Error().Err(runErr).Msg("Socket mode client error, will reconnect")
                         IncSlackReconnect()
                         scm.reconnectCount++
                     }
@@ -157,25 +175,26 @@ func (scm *SlackConnectionManager) StartWithReconnection(ctx context.Context, ev
 
 // processEvents handles socket mode events
 func (scm *SlackConnectionManager) processEvents(eventHandler func(socketmode.Event)) {
-    sc := scm.GetSocketClient()
-    for evt := range sc.Events {
-        scm.mu.Lock()
-        scm.lastPing = time.Now()
-        scm.mu.Unlock()
+    scm.WithSocketClient(func(sc *socketmode.Client) {
+        for evt := range sc.Events {
+            scm.mu.Lock()
+            scm.lastPing = time.Now()
+            scm.mu.Unlock()
 
-        // Handle special events
-        if evt.Type == socketmode.EventTypeHello {
-            zlog.Debug().Msg("Slack socket mode: hello")
-            scm.setConnected(true)
+            // Handle special events
+            if evt.Type == socketmode.EventTypeHello {
+                zlog.Debug().Msg("Slack socket mode: hello")
+                scm.setConnected(true)
+            }
+
+            zlog.Debug().Str("type", string(evt.Type)).Msg("Slack socket mode event")
+
+            // Call the custom event handler
+            if eventHandler != nil {
+                eventHandler(evt)
+            }
         }
-
-        zlog.Debug().Str("type", string(evt.Type)).Msg("Slack socket mode event")
-
-        // Call the custom event handler
-        if eventHandler != nil {
-            eventHandler(evt)
-        }
-    }
+    })
 }
 
 func startConnectionMonitor(ctx context.Context, slackManager *SlackConnectionManager) {
@@ -208,7 +227,7 @@ func buildEventHandler(store Store, client *slack.Client, slackManager *SlackCon
         switch evt.Type {
         case socketmode.EventTypeEventsAPI:
             if evt.Request != nil {
-                slackManager.GetSocketClient().Ack(*evt.Request)
+                slackManager.WithSocketClient(func(sc *socketmode.Client) { sc.Ack(*evt.Request) })
             }
             eventsAPIEvent, ok := evt.Data.(slackevents.EventsAPIEvent)
             if !ok {
