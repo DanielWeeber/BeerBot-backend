@@ -50,7 +50,7 @@ func parseLogLevel(levelStr string) zerolog.Level {
 }
 
 func main() {
-	emoji := ":beer:" // Used in buildEventHandler in slack.go
+	emoji := ":beer:" // Emoji used for beer reactions; passed to event handler(s)
 	if env := os.Getenv("EMOJI"); env != "" {
 		emoji = env
 	}
