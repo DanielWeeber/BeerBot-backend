@@ -153,7 +153,10 @@ func (scm *SlackConnectionManager) StartWithReconnection(ctx context.Context, ev
                 // Run the socket mode client
                 zlog.Info().Msg("Starting Slack socket mode client...")
                 var runErr error
-                scm.WithSocketClient(func(sc *socketmode.Client) { runErr = sc.RunContext(ctx) })
+                sc := scm.GetSocketClient()
+                if sc != nil {
+                    runErr = sc.RunContext(ctx)
+                }
                 if runErr != nil {
                     scm.setConnected(false)
                     if ctx.Err() != nil {
