@@ -18,7 +18,9 @@ import (
 
 // SlackConnectionManager manages the Slack socket mode connection, including automatic
 // reconnection using an exponential backoff strategy. The struct is safe for concurrent
-// use due to an internal sync.RWMutex that protects connection state and related fields.
+// use: mutable fields (such as connection state) are protected by an internal sync.RWMutex,
+// while immutable fields (client and socketClient) are set during initialization and are safe
+// for concurrent read access without locking.
 type SlackConnectionManager struct {
     client         *slack.Client
     socketClient   *socketmode.Client
