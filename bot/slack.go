@@ -21,7 +21,7 @@ import (
 // use: mutable fields (such as connection state and the socket client reference) are
 // protected by an internal sync.RWMutex. The Slack Web API client (`client`) is created
 // once and treated as immutable, while the Socket Mode client (`socketClient`) may be
-// replaced on reconnect under the write lock.
+// replaced atomically on reconnect under the write lock. Subsequent state updates (such as connection status) use their own locking.
 type SlackConnectionManager struct {
     client         *slack.Client
     socketClient   *socketmode.Client
