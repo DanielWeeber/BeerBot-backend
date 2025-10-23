@@ -50,7 +50,7 @@ func parseLogLevel(levelStr string) zerolog.Level {
 }
 
 func main() {
-	emoji := ":beer:" //nolint:typecheck // Used in regexp compilation below
+	emoji := ":beer:" // Used in buildEventHandler in slack.go
 	if env := os.Getenv("EMOJI"); env != "" {
 		emoji = env
 	}
@@ -72,7 +72,7 @@ func main() {
 			maxPerDayDefault = v
 		}
 	}
-	maxPerDay := flag.Int("max-per-day", maxPerDayDefault, "max beers a user may give per day") //nolint:typecheck // Used in daily limit checks
+	maxPerDay := flag.Int("max-per-day", maxPerDayDefault, "max beers a user may give per day") // Used in daily limit checks
 	flag.Parse()
 
 	if *botToken == "" || *appToken == "" || *channelID == "" {
