@@ -183,7 +183,7 @@ func (scm *SlackConnectionManager) processEvents(eventHandler func(socketmode.Ev
 
             // Handle special events
             if evt.Type == socketmode.EventTypeHello {
-                zlog.Debug().Msg("Slack socket mode: hello")
+                zlog.Info().Msg("Slack socket mode: hello")
                 scm.setConnected(true)
             }
 
@@ -209,9 +209,13 @@ func startConnectionMonitor(ctx context.Context, slackManager *SlackConnectionMa
                 if !connected {
                     zlog.Warn().Msg("Slack connection monitor: DISCONNECTED")
                 } else {
-                    // Test actual API connection periodically
+                    // Test actual API connection periodically with timing
+                    started := time.Now()
+                    zlog.Debug().Msg("Slack connection monitor: testing API connectivity")
                     if err := slackManager.TestConnection(ctx); err != nil {
-                        zlog.Error().Err(err).Msg("Slack connection monitor: API test failed")
+                        zlog.Error().Dur("duration", time.Since(started)).Err(err).Msg("Slack connection monitor: API test failed")
+                    } else {
+                        zlog.Info().Dur("duration", time.Since(started)).Msg("Slack connection monitor: API test ok")
                     }
                 }
             case <-ctx.Done():
