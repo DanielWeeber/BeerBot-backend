@@ -19,34 +19,34 @@ import (
 )
 
 type Store interface {
-    CountGivenInDateRange(user string, start, end time.Time) (int, error)
-    CountReceivedInDateRange(user string, start, end time.Time) (int, error)
-    CountGivenOnDate(user string, date string) (int, error)
-    GetAllGivers() ([]string, error)
-    GetAllRecipients() ([]string, error)
-    TryMarkEventProcessed(eventID string, t time.Time) (bool, error)
-    AddBeer(giver string, recipient string, ts string, eventTime time.Time, count int) error
+	CountGivenInDateRange(user string, start, end time.Time) (int, error)
+	CountReceivedInDateRange(user string, start, end time.Time) (int, error)
+	CountGivenOnDate(user string, date string) (int, error)
+	GetAllGivers() ([]string, error)
+	GetAllRecipients() ([]string, error)
+	TryMarkEventProcessed(eventID string, t time.Time) (bool, error)
+	AddBeer(giver string, recipient string, ts string, eventTime time.Time, count int) error
 }
 
 func parseLogLevel(levelStr string) zerolog.Level {
-    switch strings.ToLower(strings.TrimSpace(levelStr)) {
-    case "trace":
-        return zerolog.TraceLevel
-    case "debug":
-        return zerolog.DebugLevel
-    case "info":
-        return zerolog.InfoLevel
-    case "warn", "warning":
-        return zerolog.WarnLevel
-    case "error":
-        return zerolog.ErrorLevel
-    case "fatal":
-        return zerolog.FatalLevel
-    case "panic":
-        return zerolog.PanicLevel
-    default:
-        return zerolog.WarnLevel
-    }
+	switch strings.ToLower(strings.TrimSpace(levelStr)) {
+	case "trace":
+		return zerolog.TraceLevel
+	case "debug":
+		return zerolog.DebugLevel
+	case "info":
+		return zerolog.InfoLevel
+	case "warn", "warning":
+		return zerolog.WarnLevel
+	case "error":
+		return zerolog.ErrorLevel
+	case "fatal":
+		return zerolog.FatalLevel
+	case "panic":
+		return zerolog.PanicLevel
+	default:
+		return zerolog.WarnLevel
+	}
 }
 
 func main() {
@@ -87,11 +87,10 @@ func main() {
 		zlog.Fatal().Err(err).Msg("open db")
 	}
 	defer db.Close()
-	storeImpl, err := NewSQLiteStore(db)
+	store, err := NewSQLiteStore(db)
 	if err != nil {
 		zlog.Fatal().Err(err).Msg("init store")
 	}
-	var store Store = storeImpl
 
 	// Logger init
 	zerolog.TimeFieldFormat = time.RFC3339
@@ -100,8 +99,8 @@ func main() {
 	zlogger := zerolog.New(zerolog.ConsoleWriter{Out: os.Stderr}).With().Timestamp().Logger()
 	zlog.Logger = zlogger
 
-    // Metrics
-    InitMetrics()
+	// Metrics
+	InitMetrics()
 
 	// Slack manager and client
 	slackManager := NewSlackConnectionManager(*botToken, *appToken)

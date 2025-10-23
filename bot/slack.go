@@ -16,7 +16,9 @@ import (
     "github.com/slack-go/slack/socketmode"
 )
 
-// SlackConnectionManager handles Slack socket mode connection with reconnection logic
+// SlackConnectionManager manages the Slack socket mode connection, including automatic
+// reconnection using an exponential backoff strategy. The struct is safe for concurrent
+// use due to an internal sync.RWMutex that protects connection state and related fields.
 type SlackConnectionManager struct {
     client         *slack.Client
     socketClient   *socketmode.Client

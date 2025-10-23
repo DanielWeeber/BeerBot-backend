@@ -97,11 +97,19 @@ func IncBeerOutcome(channel, reason string) {
 }
 
 // statusRecorder helps capture HTTP status codes for metrics.
+//
+// Concurrency: This recorder is intended to be used per-request within a single
+// HTTP handler execution context. It does not implement internal synchronization
+// and is not safe for concurrent calls to WriteHeader from multiple goroutines.
+// Typical HTTP handlers do not invoke WriteHeader concurrently. If your handler
+// may do so, wrap status recording with your own synchronization.
 type statusRecorder struct {
     http.ResponseWriter
     status int
 }
 
+// WriteHeader records the status code and forwards it to the underlying writer.
+// See the statusRecorder type comment for concurrency assumptions.
 func (sr *statusRecorder) WriteHeader(code int) {
     sr.status = code
     sr.ResponseWriter.WriteHeader(code)
