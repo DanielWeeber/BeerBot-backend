@@ -234,7 +234,9 @@ func buildEventHandler(store Store, client *slack.Client, slackManager *SlackCon
         switch evt.Type {
         case socketmode.EventTypeEventsAPI:
             if evt.Request != nil {
-                slackManager.WithSocketClient(func(sc *socketmode.Client) { sc.Ack(*evt.Request) })
+                if sc := slackManager.GetSocketClient(); sc != nil {
+                    sc.Ack(*evt.Request)
+                }
             }
             eventsAPIEvent, ok := evt.Data.(slackevents.EventsAPIEvent)
             if !ok {
