@@ -17,9 +17,13 @@ RUN go build -o /bin/bot ./
 
 # Step 2: Create the final image
 FROM alpine:3.20
-RUN apk add --no-cache ca-certificates wget curl
+RUN apk add --no-cache ca-certificates wget curl tzdata && \
+    cp /usr/share/zoneinfo/Europe/Berlin /etc/localtime
+
 COPY --from=builder /bin/bot /bin/bot
+
 VOLUME /data
 WORKDIR /data
+
 EXPOSE 8080
 ENTRYPOINT ["/bin/bot"]
