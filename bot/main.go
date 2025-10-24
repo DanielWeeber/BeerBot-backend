@@ -13,7 +13,7 @@ import (
 	"syscall"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
+	_ "modernc.org/sqlite"
 	"github.com/rs/zerolog"
 	zlog "github.com/rs/zerolog/log"
 )
@@ -89,7 +89,7 @@ func main() {
 	if err := ensureDBDir(*dbPath); err != nil {
 		zlog.Fatal().Err(err).Msg("Failed to create DB directory")
 	}
-	db, err := sql.Open("sqlite3", *dbPath)
+	db, err := sql.Open("sqlite", *dbPath)
 	if err != nil {
 		zlog.Fatal().Err(err).Msg("open db")
 	}

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
+	_ "modernc.org/sqlite"
 )
 
 func TestGetAllGiversAndRecipients(t *testing.T) {
@@ -19,7 +19,7 @@ func TestGetAllGiversAndRecipients(t *testing.T) {
 	f.Close()
 	defer os.Remove(path)
 
-	db, err := sql.Open("sqlite3", path+"?_foreign_keys=1")
+	db, err := sql.Open("sqlite", path+"?_foreign_keys=1")
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}

@@ -7,7 +7,7 @@ import (
     "time"
     "fmt"
 
-    _ "github.com/mattn/go-sqlite3"
+    _ "modernc.org/sqlite"
 )
 
 func TestSQLiteStore_IncGet(t *testing.T) {
@@ -16,7 +16,7 @@ func TestSQLiteStore_IncGet(t *testing.T) {
     if err := os.MkdirAll("./testdata", 0o755); err != nil {
         t.Fatalf("mkdir testdata: %v", err)
     }
-    db, err := sql.Open("sqlite3", dbPath+"?_foreign_keys=1")
+    db, err := sql.Open("sqlite", dbPath+"?_foreign_keys=1")
     if err != nil {
         t.Fatalf("open db: %v", err)
     }
@@ -58,7 +58,7 @@ func TestSQLiteStore_Beers(t *testing.T) {
     if err := os.MkdirAll("./testdata", 0o755); err != nil {
         t.Fatalf("mkdir testdata: %v", err)
     }
-    db, err := sql.Open("sqlite3", dbPath+"?_foreign_keys=1")
+    db, err := sql.Open("sqlite", dbPath+"?_foreign_keys=1")
     if err != nil { t.Fatalf("open db: %v", err) }
     defer func(){ db.Close(); _ = os.Remove(dbPath) }()
 

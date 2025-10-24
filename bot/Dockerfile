@@ -2,18 +2,22 @@
 FROM golang:1.25-alpine AS builder
 WORKDIR /src
 
-# Install build dependencies
-RUN apk add --no-cache git build-base
-
-# Copy dependency information and download dependencies
+# Copy dependency information first (better layer caching)
 COPY go.mod go.sum ./
-RUN go mod download
 
-# Copy the rest of the source code
+# Download dependencies with build cache
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    go mod download
+
+# Copy source code
 COPY . .
 
-# Build the application
-RUN go build -o /bin/bot ./
+# Build with cache mounts and optimizations (no CGO needed now!)
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build -ldflags="-w -s" -a -installsuffix cgo -o /bin/bot ./
 
 # Step 2: Create the final image
 FROM alpine:3.20
