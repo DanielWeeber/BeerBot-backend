@@ -75,6 +75,13 @@ func main() {
 	maxPerDay := flag.Int("max-per-day", maxPerDayDefault, "max beers a user may give per day") // Used in daily limit checks
 	flag.Parse()
 
+	zlog.Debug().
+		Str("channel", *channelID).
+		Str("addr", *addr).
+		Str("db_path", *dbPath).
+		Str("emoji", emoji).
+		Msg("startup configuration")
+
 	if *botToken == "" || *appToken == "" || *channelID == "" {
 		zlog.Fatal().Msg("bot-token, app-token and channel must be provided via flags or env (BOT_TOKEN, APP_TOKEN, CHANNEL)")
 	}
@@ -113,6 +120,17 @@ func main() {
 	// Slack event handling
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	zlog.Info().Msg("Starting Slack event handler...")
+	// debug log the values for buildEventHandler: store, client, slackManager, *channelID, emoji, *maxPerDay
+	zlog.Debug().
+		Interface("store", store).
+		Interface("client", client).
+		Interface("slackManager", slackManager).
+		Str("channelID", *channelID).
+		Str("emoji", emoji).
+		Int("maxPerDay", *maxPerDay).
+		Msg("buildEventHandler values")
+
 	eventHandler := buildEventHandler(store, client, slackManager, *channelID, emoji, *maxPerDay)
 	slackManager.StartWithReconnection(ctx, eventHandler)
 	startConnectionMonitor(ctx, slackManager)

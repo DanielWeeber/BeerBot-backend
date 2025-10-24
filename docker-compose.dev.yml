@@ -1,10 +1,10 @@
 
-version: '3.8'
 services:
   backend:
     container_name: beerbot_backend_dev
     build:
       context: ./bot
+    env_file: .env.dev
     volumes:
       - ./bot/data:/data
     ports:
