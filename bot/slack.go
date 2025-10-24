@@ -1,19 +1,19 @@
 package main
 
 import (
-    "context"
-    "fmt"
-    "math"
-    "regexp"
-    "strconv"
-    "strings"
-    "sync"
-    "time"
+	"context"
+	"fmt"
+	"math"
+	"regexp"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
 
-    zlog "github.com/rs/zerolog/log"
-    "github.com/slack-go/slack"
-    "github.com/slack-go/slack/slackevents"
-    "github.com/slack-go/slack/socketmode"
+	zlog "github.com/rs/zerolog/log"
+	"github.com/slack-go/slack"
+	"github.com/slack-go/slack/slackevents"
+	"github.com/slack-go/slack/socketmode"
 )
 
 // SlackConnectionManager manages the Slack socket mode connection, including automatic
@@ -23,55 +23,54 @@ import (
 // once and treated as immutable, while the Socket Mode client (`socketClient`) may be
 // replaced atomically on reconnect under the write lock. Subsequent state updates (such as connection status) use their own locking.
 type SlackConnectionManager struct {
-    client         *slack.Client
-    socketClient   *socketmode.Client
-    botToken       string
-    appToken       string
-    isConnected    bool
-    lastPing       time.Time
-    reconnectCount int
-    mu             sync.RWMutex
+	client         *slack.Client
+	socketClient   *socketmode.Client
+	botToken       string
+	appToken       string
+	isConnected    bool
+	lastPing       time.Time
+	reconnectCount int
+	mu             sync.RWMutex
 }
 
 // NewSlackConnectionManager creates a new connection manager
 func NewSlackConnectionManager(botToken, appToken string) *SlackConnectionManager {
-    client := slack.New(botToken, slack.OptionAppLevelToken(appToken))
-    socketClient := socketmode.New(client)
+	client := slack.New(botToken, slack.OptionAppLevelToken(appToken))
 
-    return &SlackConnectionManager{
-        client:       client,
-        socketClient: socketClient,
-        botToken:     botToken,
-        appToken:     appToken,
-        lastPing:     time.Now(),
-    }
+	return &SlackConnectionManager{
+		client:       client,
+		socketClient: nil,
+		botToken:     botToken,
+		appToken:     appToken,
+		lastPing:     time.Now(),
+	}
 }
 
 // IsConnected returns the current connection status
 func (scm *SlackConnectionManager) IsConnected() bool {
-    scm.mu.RLock()
-    defer scm.mu.RUnlock()
-    return scm.isConnected
+	scm.mu.RLock()
+	defer scm.mu.RUnlock()
+	return scm.isConnected
 }
 
 // SetConnected updates the connection status
 func (scm *SlackConnectionManager) setConnected(connected bool) {
-    scm.mu.Lock()
-    defer scm.mu.Unlock()
-    scm.isConnected = connected
-    if connected {
-        scm.lastPing = time.Now()
-        zlog.Info().Int("reconnect_count", scm.reconnectCount).Msg("Slack connection established")
-        SetSlackConnected(true)
-    } else {
-        zlog.Warn().Msg("Slack connection lost")
-        SetSlackConnected(false)
-    }
+	scm.mu.Lock()
+	defer scm.mu.Unlock()
+	scm.isConnected = connected
+	if connected {
+		scm.lastPing = time.Now()
+		zlog.Info().Int("reconnect_count", scm.reconnectCount).Msg("Slack connection established")
+		SetSlackConnected(true)
+	} else {
+		zlog.Warn().Msg("Slack connection lost")
+		SetSlackConnected(false)
+	}
 }
 
 // GetClient returns the Slack client
 func (scm *SlackConnectionManager) GetClient() *slack.Client {
-    return scm.client
+	return scm.client
 }
 
 // GetSocketClient returns the current Socket Mode client pointer.
@@ -82,325 +81,340 @@ func (scm *SlackConnectionManager) GetClient() *slack.Client {
 // after the call. This method uses a read lock only to read the pointer safely. Prefer
 // using WithSocketClient for snapshot usage.
 func (scm *SlackConnectionManager) GetSocketClient() *socketmode.Client {
-    scm.mu.RLock()
-    defer scm.mu.RUnlock()
-    return scm.socketClient
+	scm.mu.RLock()
+	defer scm.mu.RUnlock()
+	return scm.socketClient
 }
 
 // WithSocketClient captures the current Socket Mode client and invokes fn with it.
 // The captured pointer is a snapshot and may be stale if a reconnect occurs later.
 // If there is no current client (nil), fn is not called.
 func (scm *SlackConnectionManager) WithSocketClient(fn func(*socketmode.Client)) {
-    sc := scm.GetSocketClient()
-    if sc != nil && fn != nil {
-        fn(sc)
-    }
+	sc := scm.GetSocketClient()
+	if sc != nil && fn != nil {
+		fn(sc)
+	}
 }
 
 // TestConnection tests the Slack API connection
 func (scm *SlackConnectionManager) TestConnection(ctx context.Context) error {
-    ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-    defer cancel()
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
 
-    _, err := scm.client.AuthTestContext(ctx)
-    return err
+	_, err := scm.client.AuthTestContext(ctx)
+	return err
 }
 
 // StartWithReconnection starts the socket mode client with automatic reconnection
 func (scm *SlackConnectionManager) StartWithReconnection(ctx context.Context, eventHandler func(socketmode.Event)) {
-    const maxReconnectDelay = 5 * time.Minute
+	const maxReconnectDelay = 5 * time.Minute
 
-    go func() {
-        for {
-            select {
-            case <-ctx.Done():
-                zlog.Info().Msg("Connection manager shutting down")
-                return
-            default:
-                // Calculate exponential backoff delay
-                delay := time.Duration(math.Pow(2, float64(scm.reconnectCount))) * time.Second
-                if delay > maxReconnectDelay {
-                    delay = maxReconnectDelay
-                }
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				zlog.Info().Msg("Connection manager shutting down")
+				return
+			default:
+				// Calculate exponential backoff delay
+				delay := min(time.Duration(math.Pow(2, float64(scm.reconnectCount)))*time.Second, maxReconnectDelay)
 
-                if scm.reconnectCount > 0 {
-                    zlog.Warn().Dur("delay", delay).Int("attempt", scm.reconnectCount+1).Msg("Reconnecting to Slack...")
-                    select {
-                    case <-time.After(delay):
-                    case <-ctx.Done():
-                        return
-                    }
-                }
+				if scm.reconnectCount > 0 {
+					zlog.Warn().Dur("delay", delay).Int("attempt", scm.reconnectCount+1).Msg("Reconnecting to Slack...")
+					select {
+					case <-time.After(delay):
+					case <-ctx.Done():
+						return
+					}
+				}
 
-                // Test connection first
-                if err := scm.TestConnection(ctx); err != nil {
-                    zlog.Error().Err(err).Msg("Slack API connection test failed")
-                    IncSlackReconnect()
-                    scm.reconnectCount++
-                    continue
-                }
+				// Test connection first
+				if err := scm.TestConnection(ctx); err != nil {
+					zlog.Error().Err(err).Msg("Slack API connection test failed")
+					IncSlackReconnect()
+					scm.reconnectCount++
+					continue
+				}
 
-                // Create new socket client for this connection attempt
-                scm.mu.Lock()
-                scm.socketClient = socketmode.New(scm.client)
-                scm.mu.Unlock()
-                scm.setConnected(true)
-                scm.reconnectCount = 0
+				// Create new socket client for this connection attempt
+				scm.mu.Lock()
+				scm.socketClient = socketmode.New(scm.client)
+				scm.mu.Unlock()
+				// Connection will be marked as connected upon receiving 'hello'
 
-                // Start event processing
-                go scm.processEvents(eventHandler)
+				// Start event processing
+				go scm.processEvents(eventHandler)
 
-                // Run the socket mode client
-                zlog.Info().Msg("Starting Slack socket mode client...")
-                var runErr error
-                sc := scm.GetSocketClient()
-                if sc != nil {
-                    runErr = sc.RunContext(ctx)
-                }
-                if runErr != nil {
-                    scm.setConnected(false)
-                    if ctx.Err() != nil {
-                        zlog.Info().Err(runErr).Msg("Socket mode client stopped due to context cancellation")
-                        return
-                    } else {
-                        zlog.Error().Err(runErr).Msg("Socket mode client error, will reconnect")
-                        IncSlackReconnect()
-                        scm.reconnectCount++
-                    }
-                } else {
-                    scm.setConnected(false)
-                    zlog.Info().Msg("Socket mode client stopped gracefully")
-                }
-            }
-        }
-    }()
+				// Run the socket mode client
+				zlog.Info().Msg("Starting Slack socket mode client...")
+				var runErr error
+				scm.WithSocketClient(func(sc *socketmode.Client) {
+					runErr = sc.RunContext(ctx)
+				})
+				if runErr != nil {
+					scm.setConnected(false)
+					if ctx.Err() != nil {
+						zlog.Info().Err(runErr).Msg("Socket mode client stopped due to context cancellation")
+						return
+					} else {
+						zlog.Error().Err(runErr).Msg("Socket mode client error, will reconnect")
+						IncSlackReconnect()
+						scm.reconnectCount++
+					}
+				} else {
+					scm.setConnected(false)
+					zlog.Info().Msg("Socket mode client stopped gracefully")
+				}
+			}
+		}
+	}()
 }
 
 // processEvents handles socket mode events
 func (scm *SlackConnectionManager) processEvents(eventHandler func(socketmode.Event)) {
-    scm.WithSocketClient(func(sc *socketmode.Client) {
-        for evt := range sc.Events {
-            scm.mu.Lock()
-            scm.lastPing = time.Now()
-            scm.mu.Unlock()
+	scm.WithSocketClient(func(sc *socketmode.Client) {
+		for evt := range sc.Events {
+			scm.mu.Lock()
+			scm.lastPing = time.Now()
+			scm.mu.Unlock()
 
-            // Handle special events
-            if evt.Type == socketmode.EventTypeHello {
-                zlog.Info().Msg("Slack socket mode: hello")
-                scm.setConnected(true)
-            }
+			// Log every event at info level before any filtering
+			zlog.Info().Str("event_type", string(evt.Type)).Bool("has_request", evt.Request != nil).Msg("Slack socket mode: event received")
 
-            zlog.Debug().Str("type", string(evt.Type)).Msg("Slack socket mode event")
+			if evt.Type == socketmode.EventTypeHello {
+				zlog.Info().Msg("Slack socket mode: hello")
+				scm.setConnected(true)
+				// Reset reconnect count upon successful hello
+				scm.mu.Lock()
+				scm.reconnectCount = 0
+				scm.mu.Unlock()
+			}
 
-            // Call the custom event handler
-            if eventHandler != nil {
-                eventHandler(evt)
-            }
-        }
-    })
+			zlog.Debug().Interface("event", evt).Msg("Slack socket mode event")
+
+			zlog.Debug().Str("type", string(evt.Type)).Interface("request_present", evt.Request != nil).Msg("Slack socket mode event")
+
+			// Call the custom event handler
+			if eventHandler != nil {
+				eventHandler(evt)
+			}
+		}
+	})
 }
 
 func startConnectionMonitor(ctx context.Context, slackManager *SlackConnectionManager) {
-    go func() {
-        ticker := time.NewTicker(30 * time.Second)
-        defer ticker.Stop()
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
 
-        for {
-            select {
-            case <-ticker.C:
-                connected := slackManager.IsConnected()
-                if !connected {
-                    zlog.Warn().Msg("Slack connection monitor: DISCONNECTED")
-                } else {
-                    // Test actual API connection periodically with timing
-                    started := time.Now()
-                    zlog.Debug().Msg("Slack connection monitor: testing API connectivity")
-                    if err := slackManager.TestConnection(ctx); err != nil {
-                        zlog.Error().Dur("duration", time.Since(started)).Err(err).Msg("Slack connection monitor: API test failed")
-                    } else {
-                        zlog.Info().Dur("duration", time.Since(started)).Msg("Slack connection monitor: API test ok")
-                    }
-                }
-            case <-ctx.Done():
-                zlog.Info().Msg("Connection monitor stopping")
-                return
-            }
-        }
-    }()
+		for {
+			select {
+			case <-ticker.C:
+				connected := slackManager.IsConnected()
+				if !connected {
+					zlog.Warn().Msg("Slack connection monitor: DISCONNECTED")
+				} else {
+					// Test actual API connection periodically with timing
+					started := time.Now()
+					zlog.Debug().Msg("Slack connection monitor: testing API connectivity")
+					if err := slackManager.TestConnection(ctx); err != nil {
+						zlog.Error().Dur("duration", time.Since(started)).Err(err).Msg("Slack connection monitor: API test failed")
+					} else {
+						zlog.Info().Dur("duration", time.Since(started)).Msg("Slack connection monitor: API test ok")
+					}
+				}
+			case <-ctx.Done():
+				zlog.Info().Msg("Connection monitor stopping")
+				return
+			}
+		}
+	}()
 }
 
 func buildEventHandler(store Store, client *slack.Client, slackManager *SlackConnectionManager, channelID string, emoji string, maxPerDay int) func(socketmode.Event) {
-    return func(evt socketmode.Event) {
-        switch evt.Type {
-        case socketmode.EventTypeEventsAPI:
-            if evt.Request != nil {
-                if sc := slackManager.GetSocketClient(); sc != nil {
-                    sc.Ack(*evt.Request)
-                }
-            }
-            eventsAPIEvent, ok := evt.Data.(slackevents.EventsAPIEvent)
-            if !ok {
-                zlog.Warn().Str("type", fmt.Sprintf("%T", evt.Data)).Msg("unexpected event data type")
-                return
-            }
-            if eventsAPIEvent.Type == slackevents.CallbackEvent {
-                inner := eventsAPIEvent.InnerEvent
-                switch ev := inner.Data.(type) {
-                case *slackevents.MessageEvent:
-                    if ev.Channel == channelID && ev.User != "" {
-                        if ev.SubType != "" {
-                            IncBeerOutcome(ev.Channel, "subtype")
-                            return
-                        }
-                        envelopeID := ""
-                        if evt.Request != nil && evt.Request.EnvelopeID != "" {
-                            envelopeID = evt.Request.EnvelopeID
-                        }
-                        eventID := envelopeID
-                        if eventID == "" {
-                            eventID = fmt.Sprintf("msg|%s|%s|%s", ev.Channel, ev.User, ev.TimeStamp)
-                        }
-                        if eventID != "" {
-                            if ok, err := store.TryMarkEventProcessed(eventID, time.Now()); err != nil {
-                                zlog.Error().Err(err).Msg("failed to try-mark event processed")
-                                IncBeerOutcome(ev.Channel, "event_mark_error")
-                                return
-                            } else if !ok {
-                                IncBeerOutcome(ev.Channel, "duplicate")
-                                return
-                            }
-                        }
+	return func(evt socketmode.Event) {
+		switch evt.Type {
+		case socketmode.EventTypeEventsAPI:
+			if evt.Request != nil {
+				zlog.Debug().Str("envelope_id", evt.Request.EnvelopeID).Msg("Slack events API: received request, sending ack")
+				if sc := slackManager.GetSocketClient(); sc != nil {
+					sc.Ack(*evt.Request)
+					zlog.Debug().Str("envelope_id", evt.Request.EnvelopeID).Msg("Slack events API: ack sent")
+				}
+			} else {
+				zlog.Debug().Msg("Slack events API: no request to ack")
+			}
+			eventsAPIEvent, ok := evt.Data.(slackevents.EventsAPIEvent)
+			if !ok {
+				zlog.Warn().Str("type", fmt.Sprintf("%T", evt.Data)).Msg("unexpected event data type")
+				return
+			}
+			zlog.Info().Str("outer_type", string(eventsAPIEvent.Type)).Msg("Slack events API: outer event")
+			if eventsAPIEvent.Type == slackevents.CallbackEvent {
+				inner := eventsAPIEvent.InnerEvent
+				switch ev := inner.Data.(type) {
+				case *slackevents.MessageEvent:
+					if ev.Channel == channelID && ev.User != "" {
+						zlog.Debug().Str("channel", ev.Channel).Str("user", ev.User).Str("text", ev.Text).Msg("Slack message event in target channel")
+						if ev.SubType != "" {
+							zlog.Debug().Str("subtype", ev.SubType).Msg("ignoring message with subtype")
+							IncBeerOutcome(ev.Channel, "subtype")
+							return
+						}
+						envelopeID := ""
+						if evt.Request != nil && evt.Request.EnvelopeID != "" {
+							envelopeID = evt.Request.EnvelopeID
+						}
+						eventID := envelopeID
+						if eventID == "" {
+							eventID = fmt.Sprintf("msg|%s|%s|%s", ev.Channel, ev.User, ev.TimeStamp)
+						}
+						if eventID != "" {
+							if ok, err := store.TryMarkEventProcessed(eventID, time.Now()); err != nil {
+								zlog.Error().Err(err).Msg("failed to try-mark event processed")
+								IncBeerOutcome(ev.Channel, "event_mark_error")
+								return
+							} else if !ok {
+								IncBeerOutcome(ev.Channel, "duplicate")
+								return
+							}
+						}
 
-                        mentionRe := regexp.MustCompile(`<@([A-Z0-9]+)>`)
-                        emojiRe := regexp.MustCompile(regexp.QuoteMeta(emoji))
+						mentionRe := regexp.MustCompile(`<@([A-Z0-9]+)>`)
+						emojiRe := regexp.MustCompile(regexp.QuoteMeta(emoji))
 
-                        mentions := mentionRe.FindAllStringSubmatch(ev.Text, -1)
-                        mentionIndices := mentionRe.FindAllStringSubmatchIndex(ev.Text, -1)
-                        emojiIndices := emojiRe.FindAllStringIndex(ev.Text, -1)
+						mentions := mentionRe.FindAllStringSubmatch(ev.Text, -1)
+						mentionIndices := mentionRe.FindAllStringSubmatchIndex(ev.Text, -1)
+						emojiIndices := emojiRe.FindAllStringIndex(ev.Text, -1)
 
-                        if len(mentions) == 0 || len(emojiIndices) == 0 {
-                            if len(mentions) == 0 {
-                                IncBeerOutcome(ev.Channel, "no_mentions")
-                            } else {
-                                IncBeerOutcome(ev.Channel, "no_emoji")
-                            }
-                            return
-                        }
+						if len(mentions) == 0 || len(emojiIndices) == 0 {
+							if len(mentions) == 0 {
+								zlog.Debug().Msg("no @mentions found; ignoring message")
+								IncBeerOutcome(ev.Channel, "no_mentions")
+							} else {
+								zlog.Debug().Str("emoji", emoji).Msg("emoji not found; ignoring message")
+								IncBeerOutcome(ev.Channel, "no_emoji")
+							}
+							return
+						}
 
-                        recipientBeers := make(map[string]int)
-                        for _, emojiIdx := range emojiIndices {
-                            lastMentionIdx := -1
-                            var recipientID string
-                            for i, mentionIdx := range mentionIndices {
-                                if emojiIdx[0] > mentionIdx[1] {
-                                    if mentionIdx[0] > lastMentionIdx {
-                                        lastMentionIdx = mentionIdx[0]
-                                        recipientID = mentions[i][1]
-                                    }
-                                }
-                            }
-                            if recipientID != "" {
-                                recipientBeers[recipientID]++
-                            }
-                        }
+						recipientBeers := make(map[string]int)
+						for _, emojiIdx := range emojiIndices {
+							lastMentionIdx := -1
+							var recipientID string
+							for i, mentionIdx := range mentionIndices {
+								if emojiIdx[0] > mentionIdx[1] {
+									if mentionIdx[0] > lastMentionIdx {
+										lastMentionIdx = mentionIdx[0]
+										recipientID = mentions[i][1]
+									}
+								}
+							}
+							if recipientID != "" {
+								recipientBeers[recipientID]++
+							}
+						}
 
-                        totalBeersToGive := 0
-                        for _, count := range recipientBeers {
-                            totalBeersToGive += count
-                        }
-                        if totalBeersToGive == 0 {
-                            IncBeerOutcome(ev.Channel, "zero_total")
-                            return
-                        }
+						totalBeersToGive := 0
+						for _, count := range recipientBeers {
+							totalBeersToGive += count
+						}
+						if totalBeersToGive == 0 {
+							zlog.Debug().Msg("parsed total beers to give is zero; ignoring message")
+							IncBeerOutcome(ev.Channel, "zero_total")
+							return
+						}
 
-                        today := time.Now().UTC().Format("2006-01-02")
-                        givenToday, err := store.CountGivenOnDate(ev.User, today)
-                        if err != nil {
-                            zlog.Error().Err(err).Msg("count given on date failed")
-                            IncBeerOutcome(ev.Channel, "count_error")
-                            return
-                        }
+						today := time.Now().UTC().Format("2006-01-02")
+						givenToday, err := store.CountGivenOnDate(ev.User, today)
+						if err != nil {
+							zlog.Error().Err(err).Msg("count given on date failed")
+							IncBeerOutcome(ev.Channel, "count_error")
+							return
+						}
 
-                        if givenToday >= maxPerDay {
-                            zlog.Info().Str("user", ev.User).Int("givenToday", givenToday).Msg("daily limit reached")
-                            message := fmt.Sprintf("Sorry <@%s>, you have reached your daily limit of %d beers.", ev.User, maxPerDay)
-                            if _, _, err := client.PostMessage(ev.Channel, slack.MsgOptionText(message, false)); err != nil {
-                                zlog.Error().Err(err).Msg("failed to post message")
-                            }
-                            IncBeerOutcome(ev.Channel, "limit_reached")
-                            return
-                        }
+						if givenToday >= maxPerDay {
+							zlog.Info().Str("user", ev.User).Int("givenToday", givenToday).Msg("daily limit reached")
+							message := fmt.Sprintf("Sorry <@%s>, you have reached your daily limit of %d beers.", ev.User, maxPerDay)
+							if _, _, err := client.PostMessage(ev.Channel, slack.MsgOptionText(message, false)); err != nil {
+								zlog.Error().Err(err).Msg("failed to post message")
+							}
+							IncBeerOutcome(ev.Channel, "limit_reached")
+							return
+						}
 
-                        allowed := maxPerDay - givenToday
-                        if totalBeersToGive > allowed {
-                            zlog.Info().Str("user", ev.User).Int("givenToday", givenToday).Int("totalBeersToGive", totalBeersToGive).Int("allowed", allowed).Msg("daily limit would be exceeded")
-                            message := fmt.Sprintf("Sorry <@%s>, you are trying to give %d beers, but you only have %d left for today.", ev.User, totalBeersToGive, allowed)
-                            if _, _, err := client.PostMessage(ev.Channel, slack.MsgOptionText(message, false)); err != nil {
-                                zlog.Error().Err(err).Msg("failed to post message")
-                            }
-                            IncBeerOutcome(ev.Channel, "exceeded_allowed")
-                            return
-                        }
+						allowed := maxPerDay - givenToday
+						if totalBeersToGive > allowed {
+							zlog.Info().Str("user", ev.User).Int("givenToday", givenToday).Int("totalBeersToGive", totalBeersToGive).Int("allowed", allowed).Msg("daily limit would be exceeded")
+							message := fmt.Sprintf("Sorry <@%s>, you are trying to give %d beers, but you only have %d left for today.", ev.User, totalBeersToGive, allowed)
+							if _, _, err := client.PostMessage(ev.Channel, slack.MsgOptionText(message, false)); err != nil {
+								zlog.Error().Err(err).Msg("failed to post message")
+							}
+							IncBeerOutcome(ev.Channel, "exceeded_allowed")
+							return
+						}
 
-                        for recipient, count := range recipientBeers {
-                            var eventTime time.Time
-                            if ev.TimeStamp != "" {
-                                if t, err := parseSlackTimestamp(ev.TimeStamp); err == nil {
-                                    eventTime = t
-                                } else {
-                                    eventTime = time.Now()
-                                }
-                            } else {
-                                eventTime = time.Now()
-                            }
-                            if err := store.AddBeer(ev.User, recipient, ev.TimeStamp, eventTime, count); err != nil {
-                                zlog.Error().Err(err).Msg("failed to add beer")
-                                IncBeerOutcome(ev.Channel, "store_error")
-                            }
-                            zlog.Info().Str("giver", ev.User).Str("recipient", recipient).Int("count", count).Msg("beer given")
-                        }
-                        IncMessagesProcessed(ev.Channel)
-                        IncBeerOutcome(ev.Channel, "stored")
-                    }
-                default:
-                    // ignore
-                }
-            }
-        default:
-            // ignore other event types
-        }
-    }
+						for recipient, count := range recipientBeers {
+							var eventTime time.Time
+							if ev.TimeStamp != "" {
+								if t, err := parseSlackTimestamp(ev.TimeStamp); err == nil {
+									eventTime = t
+								} else {
+									eventTime = time.Now()
+								}
+							} else {
+								eventTime = time.Now()
+							}
+							if err := store.AddBeer(ev.User, recipient, ev.TimeStamp, eventTime, count); err != nil {
+								zlog.Error().Err(err).Msg("failed to add beer")
+								IncBeerOutcome(ev.Channel, "store_error")
+							}
+							zlog.Info().Str("giver", ev.User).Str("recipient", recipient).Int("count", count).Msg("beer given")
+						}
+						IncMessagesProcessed(ev.Channel)
+						IncBeerOutcome(ev.Channel, "stored")
+					} else {
+						zlog.Debug().Str("event_channel", ev.Channel).Str("target_channel", channelID).Str("user", ev.User).Msg("Slack message event ignored due to channel or user filter")
+					}
+				default:
+					zlog.Debug().Str("inner_type", fmt.Sprintf("%T", inner.Data)).Msg("Slack callback event ignored (not a MessageEvent)")
+				}
+			}
+		default:
+			zlog.Debug().Str("type", string(evt.Type)).Msg("Slack socket mode: ignoring non-EventsAPI event")
+		}
+	}
 }
 
 // parseSlackTimestamp parses Slack timestamps of the form "1234567890.123456"
 // and returns a time.Time preserving fractional seconds.
 func parseSlackTimestamp(ts string) (time.Time, error) {
-    // Slack ts format: seconds[.fraction]
-    var secPart string
-    var fracPart string
-    if idx := strings.IndexByte(ts, '.'); idx >= 0 {
-        secPart = ts[:idx]
-        fracPart = ts[idx+1:]
-    } else {
-        secPart = ts
-    }
-    secs, err := strconv.ParseInt(secPart, 10, 64)
-    if err != nil {
-        return time.Time{}, err
-    }
-    nsec := int64(0)
-    if fracPart != "" {
-        // pad or trim to nanoseconds
-        if len(fracPart) > 9 {
-            fracPart = fracPart[:9]
-        } else {
-            for len(fracPart) < 9 {
-                fracPart += "0"
-            }
-        }
-        if nf, err := strconv.ParseInt(fracPart, 10, 64); err == nil {
-            nsec = nf
-        }
-    }
-    return time.Unix(secs, nsec), nil
+	// Slack ts format: seconds[.fraction]
+	var secPart string
+	var fracPart string
+	if idx := strings.IndexByte(ts, '.'); idx >= 0 {
+		secPart = ts[:idx]
+		fracPart = ts[idx+1:]
+	} else {
+		secPart = ts
+	}
+	secs, err := strconv.ParseInt(secPart, 10, 64)
+	if err != nil {
+		return time.Time{}, err
+	}
+	nsec := int64(0)
+	if fracPart != "" {
+		// pad or trim to nanoseconds
+		if len(fracPart) > 9 {
+			fracPart = fracPart[:9]
+		} else {
+			for len(fracPart) < 9 {
+				fracPart += "0"
+			}
+		}
+		if nf, err := strconv.ParseInt(fracPart, 10, 64); err == nil {
+			nsec = nf
+		}
+	}
+	return time.Unix(secs, nsec), nil
 }
