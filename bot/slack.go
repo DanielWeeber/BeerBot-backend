@@ -173,10 +173,14 @@ func (scm *SlackConnectionManager) StartWithReconnection(ctx context.Context, ev
 // processEvents handles socket mode events
 func (scm *SlackConnectionManager) processEvents(eventHandler func(socketmode.Event)) {
 	scm.WithSocketClient(func(sc *socketmode.Client) {
+		zlog.Info().Msg("Starting to listen for Slack events...")
 		for evt := range sc.Events {
 			scm.mu.Lock()
 			scm.lastPing = time.Now()
 			scm.mu.Unlock()
+
+			// Log ALL incoming events for debugging
+			zlog.Debug().Str("event_type", string(evt.Type)).Msg("Received Slack event")
 
 			// Handle special events
 			if evt.Type == socketmode.EventTypeHello {
@@ -192,16 +196,17 @@ func (scm *SlackConnectionManager) processEvents(eventHandler func(socketmode.Ev
 					if msg, ok := eventsAPIEvent.InnerEvent.Data.(*slackevents.MessageEvent); ok {
 						subtype = msg.SubType
 					}
-					zlog.Debug().
-						Str("type", string(evt.Type)).
-						Str("inner_type", innerType).
-						Str("subtype", subtype).
-						Msg("Slack socket mode event")
+					zlog.Info(). // Changed to Info level for better visibility
+							Str("type", string(evt.Type)).
+							Str("inner_type", innerType).
+							Str("subtype", subtype).
+							Str("outer_event_type", string(eventsAPIEvent.Type)).
+							Msg("Slack Events API event received")
 				} else {
-					zlog.Debug().Str("type", string(evt.Type)).Msg("Slack socket mode event")
+					zlog.Info().Str("type", string(evt.Type)).Msg("Slack socket mode event (non-EventsAPI)")
 				}
 			} else {
-				zlog.Debug().Str("type", string(evt.Type)).Msg("Slack socket mode event")
+				zlog.Info().Str("type", string(evt.Type)).Msg("Slack socket mode event (non-EventsAPI)")
 			}
 
 			// Call the custom event handler
