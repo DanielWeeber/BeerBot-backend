@@ -179,7 +179,7 @@ func (scm *SlackConnectionManager) processEvents(eventHandler func(socketmode.Ev
 			scm.mu.Unlock()
 
 			// Log every event at info level before any filtering
-			zlog.Info().Str("event_type", string(evt.Type)).Bool("has_request", evt.Request != nil).Msg("Slack socket mode: event received")
+			zlog.Debug().Str("event_type", string(evt.Type)).Bool("has_request", evt.Request != nil).Msg("Slack socket mode: event received")
 
 			if evt.Type == socketmode.EventTypeHello {
 				zlog.Info().Msg("Slack socket mode: hello")
@@ -191,8 +191,6 @@ func (scm *SlackConnectionManager) processEvents(eventHandler func(socketmode.Ev
 			}
 
 			zlog.Debug().Interface("event", evt).Msg("Slack socket mode event")
-
-			zlog.Debug().Str("type", string(evt.Type)).Interface("request_present", evt.Request != nil).Msg("Slack socket mode event")
 
 			// Call the custom event handler
 			if eventHandler != nil {
