@@ -383,6 +383,37 @@ Required App-Level Token Scopes:
 
 - `connections:write` - Socket Mode connection
 
+#### Event Subscriptions (required even with Socket Mode)
+
+- Enable: App → Event Subscriptions → toggle ON.
+- Subscribe to bot events:
+  - `message.channels` (public channels)
+  - If using private channels: `message.groups` and invite the bot to that private channel
+  - Optional for quick testing: `app_mention`
+- Save changes and click “Reinstall to Workspace” when prompted.
+
+#### Invite bot and set channel
+
+- Invite the bot user to the target Slack channel.
+- Find the channel ID (e.g., starts with `C...`) and set it as `CHANNEL`.
+
+#### Verify delivery
+
+- On startup you should see logs like “Slack socket mode: hello/connected”.
+- When Events API is configured, logs will include:
+  - “Slack events API: received request, sending ack”
+  - “Slack events API: outer event”
+  - Debug details for message events in the target channel
+
+#### Quick test message
+
+- In the configured channel, send a message that includes:
+  - A real user mention (Slack raw text contains `<@U...>`)
+  - The emoji configured by `EMOJI` (default `:beer:`)
+- Example: `@alice great job! :beer:`
+
+If no events arrive: re-check Event Subscriptions are enabled, required bot events are added, the app is reinstalled, and the bot is a member of the channel.
+
 ### Database
 
 The application automatically creates and migrates the SQLite database. Key features:
