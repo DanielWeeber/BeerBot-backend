@@ -190,7 +190,25 @@ func (scm *SlackConnectionManager) processEvents(eventHandler func(socketmode.Ev
                 scm.setConnected(true)
             }
 
-            zlog.Debug().Str("type", string(evt.Type)).Msg("Slack socket mode event")
+            // Expanded debug log to include inner event type and subtype if available
+            if evt.Type == socketmode.EventTypeEventsAPI {
+                if eventsAPIEvent, ok := evt.Data.(slackevents.EventsAPIEvent); ok {
+                    innerType := fmt.Sprintf("%T", eventsAPIEvent.InnerEvent.Data)
+                    subtype := ""
+                    if msg, ok := eventsAPIEvent.InnerEvent.Data.(*slackevents.MessageEvent); ok {
+                        subtype = msg.SubType
+                    }
+                    zlog.Debug().
+                        Str("type", string(evt.Type)).
+                        Str("inner_type", innerType).
+                        Str("subtype", subtype).
+                        Msg("Slack socket mode event")
+                } else {
+                    zlog.Debug().Str("type", string(evt.Type)).Msg("Slack socket mode event")
+                }
+            } else {
+                zlog.Debug().Str("type", string(evt.Type)).Msg("Slack socket mode event")
+            }
 
             // Call the custom event handler
             if eventHandler != nil {
