@@ -247,7 +247,18 @@ func startConnectionMonitor(ctx context.Context, slackManager *SlackConnectionMa
 }
 
 func buildEventHandler(store Store, client *slack.Client, slackManager *SlackConnectionManager, channelID string, emoji string, maxPerDay int) func(socketmode.Event) {
+	zlog.Info().
+		Str("target_channel", channelID).
+		Str("target_emoji", emoji).
+		Int("max_per_day", maxPerDay).
+		Msg("Event handler configured - waiting for messages")
+	
 	return func(evt socketmode.Event) {
+		zlog.Info().
+			Str("event_type", string(evt.Type)).
+			Bool("has_request", evt.Request != nil).
+			Msg("🔔 Raw Slack event received")
+		
 		switch evt.Type {
 		case socketmode.EventTypeEventsAPI:
 			if evt.Request != nil {
@@ -264,13 +275,32 @@ func buildEventHandler(store Store, client *slack.Client, slackManager *SlackCon
 				zlog.Warn().Str("type", fmt.Sprintf("%T", evt.Data)).Msg("unexpected event data type")
 				return
 			}
-			zlog.Info().Str("outer_type", string(eventsAPIEvent.Type)).Msg("Slack events API: outer event")
+			zlog.Info().
+				Str("outer_type", string(eventsAPIEvent.Type)).
+				Str("team_id", eventsAPIEvent.TeamID).
+				Msg("📨 Slack Events API outer event")
+			
 			if eventsAPIEvent.Type == slackevents.CallbackEvent {
 				inner := eventsAPIEvent.InnerEvent
+				zlog.Info().
+					Str("inner_event_type", inner.Type).
+					Interface("inner_data_type", fmt.Sprintf("%T", inner.Data)).
+					Msg("📦 Processing inner callback event")
+				
 				switch ev := inner.Data.(type) {
 				case *slackevents.MessageEvent:
+					zlog.Info().
+						Str("message_channel", ev.Channel).
+						Str("target_channel", channelID).
+						Str("user", ev.User).
+						Str("text", ev.Text).
+						Str("subtype", ev.SubType).
+						Bool("channel_match", ev.Channel == channelID).
+						Bool("user_present", ev.User != "").
+						Msg("💬 Message event received")
+					
 					if ev.Channel == channelID && ev.User != "" {
-						zlog.Debug().Str("channel", ev.Channel).Str("user", ev.User).Str("text", ev.Text).Msg("Slack message event in target channel")
+						zlog.Info().Str("channel", ev.Channel).Str("user", ev.User).Str("text", ev.Text).Msg("✅ Message event in target channel - PROCESSING")
 						if ev.SubType != "" {
 							zlog.Debug().Str("subtype", ev.SubType).Msg("ignoring message with subtype")
 							IncBeerOutcome(ev.Channel, "subtype")
@@ -389,14 +419,27 @@ func buildEventHandler(store Store, client *slack.Client, slackManager *SlackCon
 						IncMessagesProcessed(ev.Channel)
 						IncBeerOutcome(ev.Channel, "stored")
 					} else {
-						zlog.Debug().Str("event_channel", ev.Channel).Str("target_channel", channelID).Str("user", ev.User).Msg("Slack message event ignored due to channel or user filter")
+						zlog.Warn().
+							Str("message_channel", ev.Channel).
+							Str("target_channel", channelID).
+							Str("user", ev.User).
+							Bool("channel_match", ev.Channel == channelID).
+							Bool("user_present", ev.User != "").
+							Msg("❌ Message event IGNORED due to channel or user filter")
 					}
 				default:
-					zlog.Debug().Str("inner_type", fmt.Sprintf("%T", inner.Data)).Msg("Slack callback event ignored (not a MessageEvent)")
+					zlog.Info().
+						Str("inner_type", fmt.Sprintf("%T", inner.Data)).
+						Str("event_type", inner.Type).
+						Msg("🔄 Callback event ignored (not a MessageEvent)")
 				}
+			} else {
+				zlog.Info().
+					Str("outer_type", string(eventsAPIEvent.Type)).
+					Msg("🔄 Events API event ignored (not a CallbackEvent)")
 			}
 		default:
-			zlog.Debug().Str("type", string(evt.Type)).Msg("Slack socket mode: ignoring non-EventsAPI event")
+			zlog.Info().Str("type", string(evt.Type)).Msg("🔄 Socket mode event ignored (not EventsAPI)")
 		}
 	}
 }

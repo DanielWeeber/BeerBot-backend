@@ -13,9 +13,10 @@ import (
 	"syscall"
 	"time"
 
-	_ "modernc.org/sqlite"
 	"github.com/rs/zerolog"
 	zlog "github.com/rs/zerolog/log"
+	"github.com/slack-go/slack"
+	_ "modernc.org/sqlite"
 )
 
 type Store interface {
@@ -117,19 +118,69 @@ func main() {
 	mux := newMux(*apiToken, client, store, slackManager)
 	srv := startHTTPServer(*addr, mux)
 
+	// Verify Slack setup before starting
+	zlog.Info().Msg("🔧 Verifying Slack API connection...")
+	if err := slackManager.TestConnection(context.Background()); err != nil {
+		zlog.Fatal().Err(err).Msg("❌ Slack API connection test failed - check your BOT_TOKEN")
+	}
+	zlog.Info().Msg("✅ Slack API connection successful")
+
+	// Get bot info for verification
+	if authResp, err := client.AuthTest(); err != nil {
+		zlog.Warn().Err(err).Msg("Could not get bot info")
+	} else {
+		zlog.Info().
+			Str("bot_user_id", authResp.UserID).
+			Str("bot_username", authResp.User).
+			Str("team", authResp.Team).
+			Msg("🤖 Bot authenticated successfully")
+	}
+
 	// Slack event handling
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	zlog.Info().Msg("Starting Slack event handler...")
-	// debug log the values for buildEventHandler: store, client, slackManager, *channelID, emoji, *maxPerDay
-	zlog.Debug().
-		Interface("store", store).
-		Interface("client", client).
-		Interface("slackManager", slackManager).
-		Str("channelID", *channelID).
-		Str("emoji", emoji).
-		Int("maxPerDay", *maxPerDay).
-		Msg("buildEventHandler values")
+	zlog.Info().Msg("🚀 Starting Slack event handler...")
+	zlog.Info().
+		Str("target_channel_id", *channelID).
+		Str("target_emoji", emoji).
+		Int("max_beers_per_day", *maxPerDay).
+		Msg("📋 BeerBot configuration")
+
+	// Verify channel access
+	if *channelID != "" {
+		zlog.Info().Str("channel_id", *channelID).Msg("🔍 Verifying channel access...")
+		// Try to get conversation info to verify bot has access
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		
+		channels, _, err := client.GetConversationsContext(ctx, &slack.GetConversationsParameters{
+			Types: []string{"public_channel", "private_channel"},
+			Limit: 1000,
+		})
+		
+		found := false
+		if err != nil {
+			zlog.Warn().Err(err).Msg("Could not list channels - checking if target channel works anyway")
+		} else {
+			for _, ch := range channels {
+				if ch.ID == *channelID {
+					found = true
+					zlog.Info().
+						Str("channel_name", ch.Name).
+						Str("channel_id", ch.ID).
+						Bool("is_member", ch.IsMember).
+						Msg("📺 Target channel found - bot has access")
+					break
+				}
+			}
+		}
+		
+		if !found && err == nil {
+			zlog.Warn().
+				Str("channel_id", *channelID).
+				Msg("⚠️  Target channel not found in bot's channel list - bot might not be invited")
+		}
+	}
 
 	eventHandler := buildEventHandler(store, client, slackManager, *channelID, emoji, *maxPerDay)
 	slackManager.StartWithReconnection(ctx, eventHandler)
