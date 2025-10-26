@@ -23,26 +23,29 @@ import (
 // once and treated as immutable, while the Socket Mode client (`socketClient`) may be
 // replaced atomically on reconnect under the write lock. Subsequent state updates (such as connection status) use their own locking.
 type SlackConnectionManager struct {
-	client         *slack.Client
-	socketClient   *socketmode.Client
-	botToken       string
-	appToken       string
-	isConnected    bool
-	lastPing       time.Time
-	reconnectCount int
-	mu             sync.RWMutex
+	client           *slack.Client
+	socketClient     *socketmode.Client
+	botToken         string
+	appToken         string
+	isConnected      bool
+	lastPing         time.Time
+	lastMessageEvent time.Time
+	reconnectCount   int
+	mu               sync.RWMutex
 }
 
 // NewSlackConnectionManager creates a new connection manager
 func NewSlackConnectionManager(botToken, appToken string) *SlackConnectionManager {
 	client := slack.New(botToken, slack.OptionAppLevelToken(appToken))
 
+	now := time.Now()
 	return &SlackConnectionManager{
-		client:       client,
-		socketClient: nil,
-		botToken:     botToken,
-		appToken:     appToken,
-		lastPing:     time.Now(),
+		client:           client,
+		socketClient:     nil,
+		botToken:         botToken,
+		appToken:         appToken,
+		lastPing:         now,
+		lastMessageEvent: now,
 	}
 }
 
@@ -60,12 +63,31 @@ func (scm *SlackConnectionManager) setConnected(connected bool) {
 	scm.isConnected = connected
 	if connected {
 		scm.lastPing = time.Now()
+		scm.reconnectCount = 0 // Reset reconnect count on successful connection
 		zlog.Info().Int("reconnect_count", scm.reconnectCount).Msg("Slack connection established")
 		SetSlackConnected(true)
 	} else {
 		zlog.Warn().Msg("Slack connection lost")
 		SetSlackConnected(false)
 	}
+}
+
+// ForceReconnect forces a reconnection by closing socket client and marking as disconnected
+func (scm *SlackConnectionManager) ForceReconnect() {
+	zlog.Warn().Msg("🔄 Forcing Slack reconnection due to event flow issues")
+	
+	scm.mu.Lock()
+	// Close the existing socket client if it exists
+	if scm.socketClient != nil {
+		zlog.Info().Msg("🔌 Closing existing socket client")
+		// Setting to nil will cause RunContext to exit and trigger reconnection
+		scm.socketClient = nil
+	}
+	scm.isConnected = false
+	scm.reconnectCount++ // Increment to trigger reconnection logic
+	scm.mu.Unlock()
+	
+	IncSlackReconnect()
 }
 
 // GetClient returns the Slack client
@@ -235,7 +257,40 @@ func startConnectionMonitor(ctx context.Context, slackManager *SlackConnectionMa
 					if err := slackManager.TestConnection(ctx); err != nil {
 						zlog.Error().Dur("duration", time.Since(started)).Err(err).Msg("Slack connection monitor: API test failed")
 					} else {
-						zlog.Info().Dur("duration", time.Since(started)).Msg("Slack connection monitor: API test ok")
+						// Check event flow health
+						slackManager.mu.RLock()
+						currentLastPing := slackManager.lastPing
+						currentLastMessage := slackManager.lastMessageEvent
+						slackManager.mu.RUnlock()
+						
+						timeSinceLastEvent := time.Since(currentLastPing)
+						timeSinceLastMessage := time.Since(currentLastMessage)
+						
+						// If no events for more than 3 minutes, force reconnection
+						if timeSinceLastEvent > 3*time.Minute {
+							zlog.Warn().
+								Dur("time_since_last_event", timeSinceLastEvent).
+								Time("last_event", currentLastPing).
+								Msg("⚠️  No Slack events received for 3+ minutes - forcing reconnection")
+							
+							// Force reconnection to restore event flow
+							slackManager.ForceReconnect()
+							continue // Skip the rest of this iteration
+						}
+						
+						// Warn if message events specifically have stopped (but other events still flow)
+						if timeSinceLastMessage > 5*time.Minute && timeSinceLastEvent < time.Minute {
+							zlog.Warn().
+								Dur("time_since_last_message", timeSinceLastMessage).
+								Dur("time_since_last_event", timeSinceLastEvent).
+								Msg("⚠️  Message events stopped flowing but other events continue")
+						}
+						
+						zlog.Info().
+							Dur("duration", time.Since(started)).
+							Dur("time_since_last_event", timeSinceLastEvent).
+							Dur("time_since_last_message", timeSinceLastMessage).
+							Msg("Slack connection monitor: API test ok")
 					}
 				}
 			case <-ctx.Done():
@@ -289,6 +344,11 @@ func buildEventHandler(store Store, client *slack.Client, slackManager *SlackCon
 				
 				switch ev := inner.Data.(type) {
 				case *slackevents.MessageEvent:
+					// Track message events for monitoring
+					slackManager.mu.Lock()
+					slackManager.lastMessageEvent = time.Now()
+					slackManager.mu.Unlock()
+					
 					zlog.Info().
 						Str("message_channel", ev.Channel).
 						Str("target_channel", channelID).
