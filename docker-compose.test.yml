@@ -4,7 +4,9 @@ services:
     container_name: beerbot_test
     build:
       context: ./bot
+      dockerfile: Dockerfile
       target: test
+    environment:
+      DB_PATH: /data/beerbot.db
     volumes:
-      - ./bot:/src
       - ./bot/data:/data

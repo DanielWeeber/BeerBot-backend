@@ -1,0 +1,25 @@
+# VCS
+.git
+.gitignore
+
+# Binaries
+beerbot-minimal
+beerbot-debug
+*.exe
+*.out
+
+# Editor/OS
+.DS_Store
+.vscode/
+.idea/
+
+# Tests & data not needed in image
+bot/testdata/
+**/*_test.go
+
+# Cache
+node_modules/
+venv/
+
+# Misc
+.env*

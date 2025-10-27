@@ -34,6 +34,17 @@ func (s *SQLiteStore) migrate() error {
 			event_id TEXT NOT NULL UNIQUE,
 			ts TEXT NOT NULL
 		);`,
+		`CREATE TABLE IF NOT EXISTS beer_events_audit (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			event_id TEXT NOT NULL,
+			giver_id TEXT NOT NULL,
+			recipient_id TEXT NOT NULL,
+			quantity INTEGER NOT NULL,
+			status TEXT NOT NULL, -- success|duplicate|invalid_recipient|self_gift|error
+			ts_rfc DATETIME NOT NULL,
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(event_id)
+		);`,
 	}
 	for _, st := range aux {
 		if _, err := s.db.Exec(st); err != nil {
@@ -240,6 +251,60 @@ func (s *SQLiteStore) GetCount(userID, emoji string) (int, error) {
 func (s *SQLiteStore) AddBeer(giverID, recipientID string, slackTs string, t time.Time, count int) error {
 	_, err := s.db.Exec(`INSERT INTO beers (giver_id, recipient_id, ts, ts_rfc, count) VALUES (?, ?, ?, ?, ?) ON CONFLICT(giver_id, recipient_id, ts) DO UPDATE SET count = excluded.count`, giverID, recipientID, slackTs, t.UTC().Format(time.RFC3339), count)
 	return err
+}
+
+// RecordBeerEventOutcome stores processing outcome for a beer gift attempt.
+func (s *SQLiteStore) RecordBeerEventOutcome(eventID, giverID, recipientID string, quantity int, status string, t time.Time) error {
+	_, err := s.db.Exec(`INSERT OR IGNORE INTO beer_events_audit (event_id, giver_id, recipient_id, quantity, status, ts_rfc) VALUES (?, ?, ?, ?, ?, ?)`, eventID, giverID, recipientID, quantity, status, t.UTC().Format(time.RFC3339))
+	return err
+}
+
+// TopGivers returns top N givers in a date range.
+func (s *SQLiteStore) TopGivers(start, end time.Time, limit int) ([][2]string, error) {
+	if limit <= 0 {
+		limit = 5
+	}
+	startStr := start.Format("2006-01-02")
+	endStr := end.Format("2006-01-02")
+	rows, err := s.db.Query(`SELECT giver_id, COALESCE(SUM(count),0) as total FROM beers WHERE substr(ts_rfc,1,10) BETWEEN ? AND ? GROUP BY giver_id ORDER BY total DESC LIMIT ?`, startStr, endStr, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out [][2]string
+	for rows.Next() {
+		var id string
+		var total int
+		if err := rows.Scan(&id, &total); err != nil {
+			return nil, err
+		}
+		out = append(out, [2]string{id, fmt.Sprintf("%d", total)})
+	}
+	return out, nil
+}
+
+// TopReceivers returns top N receivers in a date range.
+func (s *SQLiteStore) TopReceivers(start, end time.Time, limit int) ([][2]string, error) {
+	if limit <= 0 {
+		limit = 5
+	}
+	startStr := start.Format("2006-01-02")
+	endStr := end.Format("2006-01-02")
+	rows, err := s.db.Query(`SELECT recipient_id, COALESCE(SUM(count),0) as total FROM beers WHERE substr(ts_rfc,1,10) BETWEEN ? AND ? GROUP BY recipient_id ORDER BY total DESC LIMIT ?`, startStr, endStr, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out [][2]string
+	for rows.Next() {
+		var id string
+		var total int
+		if err := rows.Scan(&id, &total); err != nil {
+			return nil, err
+		}
+		out = append(out, [2]string{id, fmt.Sprintf("%d", total)})
+	}
+	return out, nil
 }
 
 // CountGivenInDateRange returns how many beers the giver gave in the given date range

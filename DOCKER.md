@@ -75,14 +75,19 @@ docker pull danielweeber/beerbot-backend:latest
 
 ### Run Container
 
+Port alignment: the bot exposes only metrics and health on `9090`.
+
 ```bash
 docker run -d \
   --name beerbot-backend \
-  -p 8080:8080 \
+  -p 9090:9090 \
   -e BOT_TOKEN="xoxb-your-token" \
   -e APP_TOKEN="xapp-your-token" \
-  -e CHANNEL="C1234567890" \
-  -e API_TOKEN="your-api-token" \
+  -e DB_PATH="/data/beerbot.db" \
+  -e LOG_LEVEL="info" \
+  -e METRICS_PORT=9090 \
+  -e SHUTDOWN_TIMEOUT=5s \
+  -v $(pwd)/data:/data \
   danielweeber/beerbot-backend:latest
 ```
 
@@ -90,18 +95,64 @@ docker run -d \
 
 ```yaml
 services:
-  backend:
+  bot:
     image: danielweeber/beerbot-backend:latest
     ports:
-      - "8080:8080"
+      - "9090:9090"
     environment:
-      - BOT_TOKEN=${BOT_TOKEN}
-      - APP_TOKEN=${APP_TOKEN}
-      - CHANNEL=${CHANNEL}
-      - API_TOKEN=${API_TOKEN}
+      BOT_TOKEN: ${BOT_TOKEN}
+      APP_TOKEN: ${APP_TOKEN}
+      DB_PATH: /data/beerbot.db
+      METRICS_PORT: 9090
+      LOG_LEVEL: info
     volumes:
       - ./data:/data
     restart: unless-stopped
+```
+
+### Using Docker Secrets (Recommended)
+
+Create secrets:
+```bash
+printf "%s" "$BOT_TOKEN" | docker secret create slack_bot_token -
+printf "%s" "$APP_TOKEN" | docker secret create slack_app_token -
+```
+
+In a swarm deploy spec:
+```yaml
+services:
+  bot:
+    image: danielweeber/beerbot-backend:latest
+    secrets:
+      - slack_bot_token
+      - slack_app_token
+    environment:
+      DB_PATH: /data/beerbot.db
+      METRICS_PORT: 9090
+secrets:
+  slack_bot_token:
+    external: true
+  slack_app_token:
+    external: true
+```
+
+The application auto-detects `/run/secrets/slack_bot_token` and `/run/secrets/slack_app_token` if env vars are absent.
+
+### Multi-Arch Build (local)
+
+```bash
+docker buildx build \
+  --platform linux/amd64,linux/arm64 \
+  --build-arg GIT_SHA=$(git rev-parse --short HEAD) \
+  -t danielweeber/beerbot-backend:multi . --load
+```
+
+### Version Flag
+
+Binary exposes `-version`. Example:
+
+```bash
+docker run --rm danielweeber/beerbot-backend:latest /bin/bot -version
 ```
 
 ## 🔍 Monitoring

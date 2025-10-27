@@ -1,12 +1,15 @@
 
 services:
-  backend:
+  bot:
     container_name: beerbot_backend_dev
     build:
       context: ./bot
     env_file: .env.dev
+    environment:
+      METRICS_PORT: 9090
+      DB_PATH: /data/beerbot.db
     volumes:
       - ./bot/data:/data
     ports:
-      - "8080:8080"
+      - "9090:9090"
     restart: unless-stopped

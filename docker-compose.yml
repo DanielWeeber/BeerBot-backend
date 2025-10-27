@@ -7,14 +7,18 @@ services:
       context: ./bot
       dockerfile: Dockerfile
     restart: unless-stopped
+    environment:
+      METRICS_PORT: 9090
+      SHUTDOWN_TIMEOUT: 5s
+      DB_PATH: /data/beerbot.db
     volumes:
       - ./bot/data:/data
     ports:
-      - "8080:8080"
+      - "9090:9090"
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/api/health"]
+      test: ["CMD", "curl", "-fsS", "http://localhost:9090/health"]
       interval: 30s
-      timeout: 10s
+      timeout: 5s
       retries: 3
       start_period: 40s
     deploy:
