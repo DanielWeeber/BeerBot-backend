@@ -152,12 +152,12 @@ func main() {
 		// Try to get conversation info to verify bot has access
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		
+
 		channels, _, err := client.GetConversationsContext(ctx, &slack.GetConversationsParameters{
 			Types: []string{"public_channel", "private_channel"},
 			Limit: 1000,
 		})
-		
+
 		found := false
 		if err != nil {
 			zlog.Warn().Err(err).Msg("Could not list channels - checking if target channel works anyway")
@@ -174,7 +174,7 @@ func main() {
 				}
 			}
 		}
-		
+
 		if !found && err == nil {
 			zlog.Warn().
 				Str("channel_id", *channelID).

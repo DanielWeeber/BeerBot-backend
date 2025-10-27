@@ -83,14 +83,12 @@ func (scm *SlackConnectionManager) ForceReconnect() {
 		// Setting to nil will cause RunContext to exit and trigger reconnection
 		scm.socketClient = nil
 	}
-	scm.isConnected = false
+	// Don't set isConnected = false here - let the hello event handle it properly
 	scm.reconnectCount++ // Increment to trigger reconnection logic
 	scm.mu.Unlock()
 	
 	IncSlackReconnect()
-}
-
-// GetClient returns the Slack client
+}// GetClient returns the Slack client
 func (scm *SlackConnectionManager) GetClient() *slack.Client {
 	return scm.client
 }
@@ -262,22 +260,22 @@ func startConnectionMonitor(ctx context.Context, slackManager *SlackConnectionMa
 						currentLastPing := slackManager.lastPing
 						currentLastMessage := slackManager.lastMessageEvent
 						slackManager.mu.RUnlock()
-						
+
 						timeSinceLastEvent := time.Since(currentLastPing)
 						timeSinceLastMessage := time.Since(currentLastMessage)
-						
+
 						// If no events for more than 3 minutes, force reconnection
 						if timeSinceLastEvent > 3*time.Minute {
 							zlog.Warn().
 								Dur("time_since_last_event", timeSinceLastEvent).
 								Time("last_event", currentLastPing).
 								Msg("⚠️  No Slack events received for 3+ minutes - forcing reconnection")
-							
+
 							// Force reconnection to restore event flow
 							slackManager.ForceReconnect()
 							continue // Skip the rest of this iteration
 						}
-						
+
 						// Warn if message events specifically have stopped (but other events still flow)
 						if timeSinceLastMessage > 5*time.Minute && timeSinceLastEvent < time.Minute {
 							zlog.Warn().
@@ -285,7 +283,7 @@ func startConnectionMonitor(ctx context.Context, slackManager *SlackConnectionMa
 								Dur("time_since_last_event", timeSinceLastEvent).
 								Msg("⚠️  Message events stopped flowing but other events continue")
 						}
-						
+
 						zlog.Info().
 							Dur("duration", time.Since(started)).
 							Dur("time_since_last_event", timeSinceLastEvent).
@@ -307,24 +305,26 @@ func buildEventHandler(store Store, client *slack.Client, slackManager *SlackCon
 		Str("target_emoji", emoji).
 		Int("max_per_day", maxPerDay).
 		Msg("Event handler configured - waiting for messages")
-	
+
 	return func(evt socketmode.Event) {
 		zlog.Info().
 			Str("event_type", string(evt.Type)).
 			Bool("has_request", evt.Request != nil).
 			Msg("🔔 Raw Slack event received")
 		
-		switch evt.Type {
-		case socketmode.EventTypeEventsAPI:
+		// Helper function to send ACK
+		sendAck := func() {
 			if evt.Request != nil {
-				zlog.Debug().Str("envelope_id", evt.Request.EnvelopeID).Msg("Slack events API: received request, sending ack")
+				zlog.Debug().Str("envelope_id", evt.Request.EnvelopeID).Msg("Slack events API: sending ack after processing")
 				if sc := slackManager.GetSocketClient(); sc != nil {
 					sc.Ack(*evt.Request)
 					zlog.Debug().Str("envelope_id", evt.Request.EnvelopeID).Msg("Slack events API: ack sent")
 				}
-			} else {
-				zlog.Debug().Msg("Slack events API: no request to ack")
 			}
+		}
+		
+		switch evt.Type {
+		case socketmode.EventTypeEventsAPI:
 			eventsAPIEvent, ok := evt.Data.(slackevents.EventsAPIEvent)
 			if !ok {
 				zlog.Warn().Str("type", fmt.Sprintf("%T", evt.Data)).Msg("unexpected event data type")
@@ -334,21 +334,21 @@ func buildEventHandler(store Store, client *slack.Client, slackManager *SlackCon
 				Str("outer_type", string(eventsAPIEvent.Type)).
 				Str("team_id", eventsAPIEvent.TeamID).
 				Msg("📨 Slack Events API outer event")
-			
+
 			if eventsAPIEvent.Type == slackevents.CallbackEvent {
 				inner := eventsAPIEvent.InnerEvent
 				zlog.Info().
 					Str("inner_event_type", inner.Type).
 					Interface("inner_data_type", fmt.Sprintf("%T", inner.Data)).
 					Msg("📦 Processing inner callback event")
-				
+
 				switch ev := inner.Data.(type) {
 				case *slackevents.MessageEvent:
 					// Track message events for monitoring
 					slackManager.mu.Lock()
 					slackManager.lastMessageEvent = time.Now()
 					slackManager.mu.Unlock()
-					
+
 					zlog.Info().
 						Str("message_channel", ev.Channel).
 						Str("target_channel", channelID).
@@ -358,7 +358,7 @@ func buildEventHandler(store Store, client *slack.Client, slackManager *SlackCon
 						Bool("channel_match", ev.Channel == channelID).
 						Bool("user_present", ev.User != "").
 						Msg("💬 Message event received")
-					
+
 					if ev.Channel == channelID && ev.User != "" {
 						zlog.Info().Str("channel", ev.Channel).Str("user", ev.User).Str("text", ev.Text).Msg("✅ Message event in target channel - PROCESSING")
 						if ev.SubType != "" {
@@ -501,6 +501,9 @@ func buildEventHandler(store Store, client *slack.Client, slackManager *SlackCon
 		default:
 			zlog.Info().Str("type", string(evt.Type)).Msg("🔄 Socket mode event ignored (not EventsAPI)")
 		}
+		
+		// Send ACK after processing the event
+		sendAck()
 	}
 }
 
