@@ -224,13 +224,13 @@ func (bot *MinimalSlackBot) handleMessage(event *slackevents.MessageEvent) {
 // and textual/emoji beer variants. Matching only signals intent; quantity extraction is handled separately.
 // NOTE: Keep patterns simple to avoid catastrophic backtracking; prefer multiple explicit regexes.
 var compiledGiftPatterns = []*regexp.Regexp{
-	// Original forms: emoji/keyword before mention
+	// Original forms: emoji/keyword before mention (with word boundaries for text)
 	regexp.MustCompile(`🍺\s*<@[A-Z0-9]+>`),
 	regexp.MustCompile(`🍻\s*<@[A-Z0-9]+>`),
 	regexp.MustCompile(`:beer:\s*<@[A-Z0-9]+>`),
 	regexp.MustCompile(`:beers:\s*<@[A-Z0-9]+>`),
-	regexp.MustCompile(`(?i)beer\s+<@[A-Z0-9]+>`),
-	regexp.MustCompile(`(?i)beers\s+<@[A-Z0-9]+>`),
+	regexp.MustCompile(`(?i)\bbeer\s+<@[A-Z0-9]+>`),
+	regexp.MustCompile(`(?i)\bbeers\s+<@[A-Z0-9]+>`),
 
 	// Mention-first ordering with emojis or keywords immediately or with minimal spacing
 	regexp.MustCompile(`<@[A-Z0-9]+>\s*🍺+`),          // one or many single beer emojis
@@ -240,15 +240,15 @@ var compiledGiftPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)<@[A-Z0-9]+>\s*beer\b`),  // mention then 'beer'
 	regexp.MustCompile(`(?i)<@[A-Z0-9]+>\s*beers\b`), // mention then 'beers'
 
-	// Give/gives/giving/gift phrasing before mention (emoji or keyword after optional quantity)
-	regexp.MustCompile(`(?i)give\s+<@[A-Z0-9]+>\s*(?:\d+\s*)?(?:�+|�🍻+|:beer:|:beers:|beer|beers)`),
-	regexp.MustCompile(`(?i)gives\s+<@[A-Z0-9]+>\s*(?:\d+\s*)?(?:🍺+|🍻+|:beer:|:beers:|beer|beers)`),
-	regexp.MustCompile(`(?i)giving\s+<@[A-Z0-9]+>\s*(?:\d+\s*)?(?:🍺+|🍻+|:beer:|:beers:|beer|beers)`),
-	regexp.MustCompile(`(?i)gift\s+<@[A-Z0-9]+>\s*(?:\d+\s*)?(?:🍺+|🍻+|:beer:|:beers:|beer|beers)`),
-	regexp.MustCompile(`(?i)gifting\s+<@[A-Z0-9]+>\s*(?:\d+\s*)?(?:🍺+|🍻+|:beer:|:beers:|beer|beers)`),
+	// Give/gives/giving/gift phrasing before mention (emoji or keyword after optional quantity with word boundaries)
+	regexp.MustCompile(`(?i)\bgive\s+<@[A-Z0-9]+>\s*(?:\d+\s*)?(?:🍺+|🍻+|:beer:|:beers:|\bbeer\b|\bbeers\b)`),
+	regexp.MustCompile(`(?i)\bgives\s+<@[A-Z0-9]+>\s*(?:\d+\s*)?(?:🍺+|🍻+|:beer:|:beers:|\bbeer\b|\bbeers\b)`),
+	regexp.MustCompile(`(?i)\bgiving\s+<@[A-Z0-9]+>\s*(?:\d+\s*)?(?:🍺+|🍻+|:beer:|:beers:|\bbeer\b|\bbeers\b)`),
+	regexp.MustCompile(`(?i)\bgift\s+<@[A-Z0-9]+>\s*(?:\d+\s*)?(?:🍺+|🍻+|:beer:|:beers:|\bbeer\b|\bbeers\b)`),
+	regexp.MustCompile(`(?i)\bgifting\s+<@[A-Z0-9]+>\s*(?:\d+\s*)?(?:🍺+|🍻+|:beer:|:beers:|\bbeer\b|\bbeers\b)`),
 
-	// Verb after mention: <@U123> gives 3 beers / <@U123> give beer
-	regexp.MustCompile(`<@[A-Z0-9]+>\s+(?i:gives?|giving|gift|gifting)\s*(?:\d+\s*)?(?:🍺+|🍻+|:beer:|:beers:|beer|beers)`),
+	// Verb after mention: <@U123> gives 3 beers / <@U123> give beer (with word boundaries)
+	regexp.MustCompile(`<@[A-Z0-9]+>\s+(?i:gives?|giving|gift|gifting)\s*(?:\d+\s*)?(?:🍺+|🍻+|:beer:|:beers:|\bbeer\b|\bbeers\b)`),
 }
 
 func (bot *MinimalSlackBot) isBeerGiving(text string) bool {
