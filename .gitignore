@@ -29,6 +29,7 @@
 /bot/testdata/
 /bot/.env
 /bot/bot
+/bot/beerbot-*
 
 # Docker
 docker-compose.override.yml
