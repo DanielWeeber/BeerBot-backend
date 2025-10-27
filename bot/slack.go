@@ -27,6 +27,7 @@ type MinimalSlackBot struct {
 	errorCounter *prometheus.CounterVec
 	maxGift      int
 	readOnly     bool
+	traceEvents  bool
 }
 
 // NewMinimalSlackBot creates a new minimal Slack bot instance
@@ -75,6 +76,7 @@ func NewMinimalSlackBot(botToken, appToken string, store Store, logger zerolog.L
 		}
 	}
 	readOnly := strings.EqualFold(os.Getenv("READ_ONLY"), "true") || os.Getenv("READ_ONLY") == "1"
+	traceEvents := strings.EqualFold(os.Getenv("TRACE_EVENTS"), "true") || os.Getenv("TRACE_EVENTS") == "1"
 
 	return &MinimalSlackBot{
 		api:          api,
@@ -85,6 +87,7 @@ func NewMinimalSlackBot(botToken, appToken string, store Store, logger zerolog.L
 		errorCounter: errorCounter,
 		maxGift:      maxGift,
 		readOnly:     readOnly,
+		traceEvents:  traceEvents,
 	}, nil
 }
 
@@ -110,16 +113,30 @@ func (bot *MinimalSlackBot) Stop() {
 
 // handleEvents processes incoming Slack events
 func (bot *MinimalSlackBot) handleEvents() {
+	bot.logger.Info().Msg("Event handler loop started - waiting for Socket Mode events...")
 	for event := range bot.client.Events {
+		bot.logger.Debug().Msg(">>> NEW EVENT FROM SOCKET MODE CHANNEL <<<")
 		bot.processEvent(event)
 	}
+	bot.logger.Warn().Msg("Event handler loop ended - Socket Mode channel closed")
 }
 
 // processEvent handles individual Slack events
 func (bot *MinimalSlackBot) processEvent(evt socketmode.Event) {
+	// RAW EVENT LOG: Log every incoming socket event before any processing
+	bot.logger.Debug().
+		Str("socket_event_type", string(evt.Type)).
+		Interface("event_data", evt.Data).
+		Bool("has_request", evt.Request != nil).
+		Msg("RAW SOCKET EVENT RECEIVED")
+
 	// ACK only EventsAPI & Interaction events that carry a request envelope
 	if (evt.Type == socketmode.EventTypeEventsAPI || evt.Type == socketmode.EventTypeSlashCommand) && evt.Request != nil {
 		bot.client.Ack(*evt.Request)
+	}
+
+	if bot.traceEvents {
+		bot.logger.Debug().Str("socket_event_type", string(evt.Type)).Msg("Received socket event")
 	}
 
 	switch evt.Type {
@@ -146,9 +163,25 @@ func (bot *MinimalSlackBot) processEvent(evt socketmode.Event) {
 
 // handleEventsAPIEvent processes Events API events
 func (bot *MinimalSlackBot) handleEventsAPIEvent(event slackevents.EventsAPIEvent) {
+	// RAW EVENTSAPI LOG: Log the full event structure before any parsing
+	bot.logger.Debug().
+		Str("api_event_type", string(event.Type)).
+		Interface("full_event", event).
+		Msg("RAW EVENTSAPI EVENT RECEIVED")
+
+	if bot.traceEvents {
+		bot.logger.Debug().Str("api_event_type", string(event.Type)).Msg("Processing EventsAPIEvent")
+	}
 	switch event.Type {
 	case slackevents.CallbackEvent:
 		innerEvent := event.InnerEvent
+		bot.logger.Debug().
+			Str("inner_type", innerEvent.Type).
+			Interface("inner_data", innerEvent.Data).
+			Msg("RAW CALLBACK INNER EVENT")
+		if bot.traceEvents {
+			bot.logger.Debug().Str("inner_type", innerEvent.Type).Msg("Inner callback event")
+		}
 		switch ev := innerEvent.Data.(type) {
 		case *slackevents.MessageEvent:
 			bot.handleMessage(ev)
@@ -174,6 +207,10 @@ func (bot *MinimalSlackBot) handleMessage(event *slackevents.MessageEvent) {
 		return // ignore replies in threads
 	}
 
+	if bot.traceEvents {
+		bot.logger.Debug().Str("channel", event.Channel).Str("user", event.User).Str("text", event.Text).Msg("MessageEvent candidate")
+	}
+
 	bot.eventCounter.WithLabelValues("message", "received").Inc()
 
 	if bot.isBeerGiving(event.Text) {
@@ -182,17 +219,44 @@ func (bot *MinimalSlackBot) handleMessage(event *slackevents.MessageEvent) {
 }
 
 // isBeerGiving checks if the message is giving beer to someone
+// compiledGiftPatterns contains a broadened set of regexes that indicate a beer gift intent.
+// We support both emoji-first and mention-first ordering, optional "give" verbs, quantity numbers,
+// and textual/emoji beer variants. Matching only signals intent; quantity extraction is handled separately.
+// NOTE: Keep patterns simple to avoid catastrophic backtracking; prefer multiple explicit regexes.
 var compiledGiftPatterns = []*regexp.Regexp{
+	// Original forms: emoji/keyword before mention
 	regexp.MustCompile(`🍺\s*<@[A-Z0-9]+>`),
-	regexp.MustCompile(`(?i)beer\s+<@[A-Z0-9]+>`),
-	regexp.MustCompile(`:beer:\s*<@[A-Z0-9]+>`),
 	regexp.MustCompile(`🍻\s*<@[A-Z0-9]+>`),
+	regexp.MustCompile(`:beer:\s*<@[A-Z0-9]+>`),
 	regexp.MustCompile(`:beers:\s*<@[A-Z0-9]+>`),
+	regexp.MustCompile(`(?i)beer\s+<@[A-Z0-9]+>`),
+	regexp.MustCompile(`(?i)beers\s+<@[A-Z0-9]+>`),
+
+	// Mention-first ordering with emojis or keywords immediately or with minimal spacing
+	regexp.MustCompile(`<@[A-Z0-9]+>\s*🍺+`),          // one or many single beer emojis
+	regexp.MustCompile(`<@[A-Z0-9]+>\s*🍻+`),          // one or many clinking beer emojis
+	regexp.MustCompile(`<@[A-Z0-9]+>\s*:beer:`),      // textual beer emoji after mention
+	regexp.MustCompile(`<@[A-Z0-9]+>\s*:beers:`),     // textual beers emoji after mention
+	regexp.MustCompile(`(?i)<@[A-Z0-9]+>\s*beer\b`),  // mention then 'beer'
+	regexp.MustCompile(`(?i)<@[A-Z0-9]+>\s*beers\b`), // mention then 'beers'
+
+	// Give/gives/giving/gift phrasing before mention (emoji or keyword after optional quantity)
+	regexp.MustCompile(`(?i)give\s+<@[A-Z0-9]+>\s*(?:\d+\s*)?(?:�+|�🍻+|:beer:|:beers:|beer|beers)`),
+	regexp.MustCompile(`(?i)gives\s+<@[A-Z0-9]+>\s*(?:\d+\s*)?(?:🍺+|🍻+|:beer:|:beers:|beer|beers)`),
+	regexp.MustCompile(`(?i)giving\s+<@[A-Z0-9]+>\s*(?:\d+\s*)?(?:🍺+|🍻+|:beer:|:beers:|beer|beers)`),
+	regexp.MustCompile(`(?i)gift\s+<@[A-Z0-9]+>\s*(?:\d+\s*)?(?:🍺+|🍻+|:beer:|:beers:|beer|beers)`),
+	regexp.MustCompile(`(?i)gifting\s+<@[A-Z0-9]+>\s*(?:\d+\s*)?(?:🍺+|🍻+|:beer:|:beers:|beer|beers)`),
+
+	// Verb after mention: <@U123> gives 3 beers / <@U123> give beer
+	regexp.MustCompile(`<@[A-Z0-9]+>\s+(?i:gives?|giving|gift|gifting)\s*(?:\d+\s*)?(?:🍺+|🍻+|:beer:|:beers:|beer|beers)`),
 }
 
 func (bot *MinimalSlackBot) isBeerGiving(text string) bool {
 	for _, rx := range compiledGiftPatterns {
 		if rx.MatchString(text) {
+			if bot.traceEvents {
+				bot.logger.Debug().Str("pattern", rx.String()).Msg("Beer gift pattern matched")
+			}
 			return true
 		}
 	}
