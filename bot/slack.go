@@ -184,7 +184,13 @@ func (bot *MinimalSlackBot) handleEventsAPIEvent(event slackevents.EventsAPIEven
 		}
 		switch ev := innerEvent.Data.(type) {
 		case *slackevents.MessageEvent:
-			bot.handleMessage(ev)
+			// Pass the EventsAPICallback for access to event_id
+			if callback, ok := event.Data.(*slackevents.EventsAPICallbackEvent); ok {
+				bot.handleMessage(ev, callback.EventID)
+			} else {
+				bot.logger.Warn().Msg("Failed to extract EventsAPICallbackEvent for event_id")
+				bot.handleMessage(ev, "")
+			}
 		default:
 			bot.logger.Debug().
 				Str("inner_event_type", innerEvent.Type).
@@ -198,7 +204,7 @@ func (bot *MinimalSlackBot) handleEventsAPIEvent(event slackevents.EventsAPIEven
 }
 
 // handleMessage processes message events for beer giving
-func (bot *MinimalSlackBot) handleMessage(event *slackevents.MessageEvent) {
+func (bot *MinimalSlackBot) handleMessage(event *slackevents.MessageEvent, eventID string) {
 	// Skip bot messages, empty text, edits (subtypes), and thread replies (only handle top-level)
 	if event.BotID != "" || event.Text == "" || event.SubType != "" {
 		return
@@ -208,13 +214,13 @@ func (bot *MinimalSlackBot) handleMessage(event *slackevents.MessageEvent) {
 	}
 
 	if bot.traceEvents {
-		bot.logger.Debug().Str("channel", event.Channel).Str("user", event.User).Str("text", event.Text).Msg("MessageEvent candidate")
+		bot.logger.Debug().Str("channel", event.Channel).Str("user", event.User).Str("text", event.Text).Str("event_id", eventID).Msg("MessageEvent candidate")
 	}
 
 	bot.eventCounter.WithLabelValues("message", "received").Inc()
 
 	if bot.isBeerGiving(event.Text) {
-		bot.processBeerGiving(event)
+		bot.processBeerGiving(event, eventID)
 	}
 }
 
@@ -264,22 +270,31 @@ func (bot *MinimalSlackBot) isBeerGiving(text string) bool {
 }
 
 // processBeerGiving handles beer giving events
-func (bot *MinimalSlackBot) processBeerGiving(event *slackevents.MessageEvent) {
+func (bot *MinimalSlackBot) processBeerGiving(event *slackevents.MessageEvent, eventID string) {
+	// Use the Slack event_id for deduplication, fallback to timestamp if not available
+	dedupKey := eventID
+	if dedupKey == "" {
+		dedupKey = event.EventTimeStamp
+		bot.logger.Warn().Str("timestamp", event.EventTimeStamp).Msg("No event_id available, falling back to timestamp for deduplication")
+	}
+
 	// Check for event deduplication
 	eventTime := parseSlackTS(event.EventTimeStamp)
-	alreadyProcessed, err := bot.store.TryMarkEventProcessed(event.EventTimeStamp, eventTime)
+	isNewEvent, err := bot.store.TryMarkEventProcessed(dedupKey, eventTime)
 	if err != nil {
-		_ = bot.store.RecordBeerEventOutcome(event.EventTimeStamp, event.User, "", 0, "error", eventTime)
+		_ = bot.store.RecordBeerEventOutcome(dedupKey, event.User, "", 0, "error", eventTime)
 		bot.logger.Error().
 			Err(err).
+			Str("event_id", eventID).
 			Str("timestamp", event.EventTimeStamp).
 			Msg("Error checking event deduplication")
 		bot.errorCounter.WithLabelValues("dedup_error").Inc()
 		return
 	}
-	if alreadyProcessed {
-		_ = bot.store.RecordBeerEventOutcome(event.EventTimeStamp, event.User, "", 0, "duplicate", eventTime)
+	if !isNewEvent {
+		_ = bot.store.RecordBeerEventOutcome(dedupKey, event.User, "", 0, "duplicate", eventTime)
 		bot.logger.Debug().
+			Str("event_id", eventID).
 			Str("timestamp", event.EventTimeStamp).
 			Msg("Event already processed, skipping")
 		bot.eventCounter.WithLabelValues("beer_giving", "duplicate").Inc()
@@ -289,7 +304,7 @@ func (bot *MinimalSlackBot) processBeerGiving(event *slackevents.MessageEvent) {
 	// Extract recipient user ID
 	recipient := bot.extractRecipient(event.Text)
 	if recipient == "" {
-		_ = bot.store.RecordBeerEventOutcome(event.EventTimeStamp, event.User, "", 0, "invalid_recipient", eventTime)
+		_ = bot.store.RecordBeerEventOutcome(dedupKey, event.User, "", 0, "invalid_recipient", eventTime)
 		bot.logger.Warn().
 			Str("text", event.Text).
 			Msg("Could not extract recipient from beer message")
@@ -308,7 +323,7 @@ func (bot *MinimalSlackBot) processBeerGiving(event *slackevents.MessageEvent) {
 
 	// Prevent self gifting
 	if recipient == event.User {
-		_ = bot.store.RecordBeerEventOutcome(event.EventTimeStamp, event.User, recipient, quantity, "self_gift", eventTime)
+		_ = bot.store.RecordBeerEventOutcome(dedupKey, event.User, recipient, quantity, "self_gift", eventTime)
 		bot.eventCounter.WithLabelValues("beer_giving", "self_gift").Inc()
 		bot.postEphemeral(event.Channel, event.User, "🍺 You can't gift beer to yourself. Find a teammate!")
 		return
@@ -326,7 +341,7 @@ func (bot *MinimalSlackBot) processBeerGiving(event *slackevents.MessageEvent) {
 	} else {
 		storeErr := bot.store.AddBeer(event.User, recipient, event.EventTimeStamp, eventTime, quantity)
 		if storeErr != nil {
-			_ = bot.store.RecordBeerEventOutcome(event.EventTimeStamp, event.User, recipient, quantity, "error", eventTime)
+			_ = bot.store.RecordBeerEventOutcome(dedupKey, event.User, recipient, quantity, "error", eventTime)
 			bot.logger.Error().
 				Err(storeErr).
 				Str("giver", event.User).
@@ -338,7 +353,7 @@ func (bot *MinimalSlackBot) processBeerGiving(event *slackevents.MessageEvent) {
 		}
 	}
 
-	_ = bot.store.RecordBeerEventOutcome(event.EventTimeStamp, event.User, recipient, quantity, "success", eventTime)
+	_ = bot.store.RecordBeerEventOutcome(dedupKey, event.User, recipient, quantity, "success", eventTime)
 	bot.eventCounter.WithLabelValues("beer_giving", "success").Inc()
 	bot.sendBeerConfirmation(event.Channel, event.User, recipient, quantity)
 }
