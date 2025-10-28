@@ -124,10 +124,15 @@ func (bot *MinimalSlackBot) handleEvents() {
 // processEvent handles individual Slack events
 func (bot *MinimalSlackBot) processEvent(evt socketmode.Event) {
 	// RAW EVENT LOG: Log every incoming socket event before any processing
+	envelopeID := ""
+	if evt.Request != nil {
+		envelopeID = evt.Request.EnvelopeID
+	}
 	bot.logger.Debug().
 		Str("socket_event_type", string(evt.Type)).
 		Interface("event_data", evt.Data).
 		Bool("has_request", evt.Request != nil).
+		Str("envelope_id", envelopeID).
 		Msg("RAW SOCKET EVENT RECEIVED")
 
 	// ACK only EventsAPI & Interaction events that carry a request envelope
@@ -147,7 +152,7 @@ func (bot *MinimalSlackBot) processEvent(evt socketmode.Event) {
 			bot.errorCounter.WithLabelValues("cast_error").Inc()
 			return
 		}
-		bot.handleEventsAPIEvent(eventsAPIEvent)
+		bot.handleEventsAPIEvent(eventsAPIEvent, envelopeID)
 	case socketmode.EventTypeSlashCommand:
 		cmd, ok := evt.Data.(slack.SlashCommand)
 		if !ok {
@@ -162,11 +167,12 @@ func (bot *MinimalSlackBot) processEvent(evt socketmode.Event) {
 }
 
 // handleEventsAPIEvent processes Events API events
-func (bot *MinimalSlackBot) handleEventsAPIEvent(event slackevents.EventsAPIEvent) {
+func (bot *MinimalSlackBot) handleEventsAPIEvent(event slackevents.EventsAPIEvent, envelopeID string) {
 	// RAW EVENTSAPI LOG: Log the full event structure before any parsing
 	bot.logger.Debug().
 		Str("api_event_type", string(event.Type)).
 		Interface("full_event", event).
+		Str("envelope_id", envelopeID).
 		Msg("RAW EVENTSAPI EVENT RECEIVED")
 
 	if bot.traceEvents {
@@ -184,13 +190,8 @@ func (bot *MinimalSlackBot) handleEventsAPIEvent(event slackevents.EventsAPIEven
 		}
 		switch ev := innerEvent.Data.(type) {
 		case *slackevents.MessageEvent:
-			// Pass the EventsAPICallback for access to event_id
-			if callback, ok := event.Data.(*slackevents.EventsAPICallbackEvent); ok {
-				bot.handleMessage(ev, callback.EventID)
-			} else {
-				bot.logger.Warn().Msg("Failed to extract EventsAPICallbackEvent for event_id")
-				bot.handleMessage(ev, "")
-			}
+			// Pass the envelope_id for deduplication
+			bot.handleMessage(ev, envelopeID)
 		default:
 			bot.logger.Debug().
 				Str("inner_event_type", innerEvent.Type).
@@ -204,7 +205,7 @@ func (bot *MinimalSlackBot) handleEventsAPIEvent(event slackevents.EventsAPIEven
 }
 
 // handleMessage processes message events for beer giving
-func (bot *MinimalSlackBot) handleMessage(event *slackevents.MessageEvent, eventID string) {
+func (bot *MinimalSlackBot) handleMessage(event *slackevents.MessageEvent, envelopeID string) {
 	// Skip bot messages, empty text, edits (subtypes), and thread replies (only handle top-level)
 	if event.BotID != "" || event.Text == "" || event.SubType != "" {
 		return
@@ -214,13 +215,13 @@ func (bot *MinimalSlackBot) handleMessage(event *slackevents.MessageEvent, event
 	}
 
 	if bot.traceEvents {
-		bot.logger.Debug().Str("channel", event.Channel).Str("user", event.User).Str("text", event.Text).Str("event_id", eventID).Msg("MessageEvent candidate")
+		bot.logger.Debug().Str("channel", event.Channel).Str("user", event.User).Str("text", event.Text).Str("envelope_id", envelopeID).Msg("MessageEvent candidate")
 	}
 
 	bot.eventCounter.WithLabelValues("message", "received").Inc()
 
 	if bot.isBeerGiving(event.Text) {
-		bot.processBeerGiving(event, eventID)
+		bot.processBeerGiving(event, envelopeID)
 	}
 }
 
@@ -270,12 +271,12 @@ func (bot *MinimalSlackBot) isBeerGiving(text string) bool {
 }
 
 // processBeerGiving handles beer giving events
-func (bot *MinimalSlackBot) processBeerGiving(event *slackevents.MessageEvent, eventID string) {
-	// Use the Slack event_id for deduplication, fallback to timestamp if not available
-	dedupKey := eventID
+func (bot *MinimalSlackBot) processBeerGiving(event *slackevents.MessageEvent, envelopeID string) {
+	// Use the Socket Mode envelope_id for deduplication, fallback to timestamp if not available
+	dedupKey := envelopeID
 	if dedupKey == "" {
 		dedupKey = event.EventTimeStamp
-		bot.logger.Warn().Str("timestamp", event.EventTimeStamp).Msg("No event_id available, falling back to timestamp for deduplication")
+		bot.logger.Warn().Str("timestamp", event.EventTimeStamp).Msg("No envelope_id available, falling back to timestamp for deduplication")
 	}
 
 	// Check for event deduplication
@@ -285,7 +286,7 @@ func (bot *MinimalSlackBot) processBeerGiving(event *slackevents.MessageEvent, e
 		_ = bot.store.RecordBeerEventOutcome(dedupKey, event.User, "", 0, "error", eventTime)
 		bot.logger.Error().
 			Err(err).
-			Str("event_id", eventID).
+			Str("envelope_id", envelopeID).
 			Str("timestamp", event.EventTimeStamp).
 			Msg("Error checking event deduplication")
 		bot.errorCounter.WithLabelValues("dedup_error").Inc()
@@ -294,7 +295,7 @@ func (bot *MinimalSlackBot) processBeerGiving(event *slackevents.MessageEvent, e
 	if !isNewEvent {
 		_ = bot.store.RecordBeerEventOutcome(dedupKey, event.User, "", 0, "duplicate", eventTime)
 		bot.logger.Debug().
-			Str("event_id", eventID).
+			Str("envelope_id", envelopeID).
 			Str("timestamp", event.EventTimeStamp).
 			Msg("Event already processed, skipping")
 		bot.eventCounter.WithLabelValues("beer_giving", "duplicate").Inc()
