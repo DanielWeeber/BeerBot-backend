@@ -527,3 +527,8 @@ func (bot *MinimalSlackBot) TestConnection() error {
 
 	return nil
 }
+
+// GetAPIClient returns the Slack API client for making API calls
+func (bot *MinimalSlackBot) GetAPIClient() *slack.Client {
+	return bot.api
+}

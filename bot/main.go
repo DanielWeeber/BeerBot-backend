@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"flag"
+	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
@@ -15,6 +17,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
+	"github.com/slack-go/slack"
 	_ "modernc.org/sqlite"
 )
 
@@ -205,14 +208,23 @@ func main() {
 		// Check if file is writable by owner (user permission bit)
 		mode := fileInfo.Mode()
 		isWritable := mode&0200 != 0 // Owner write permission
-		if !isWritable {
+
+		// Check if permissions meet minimum requirement: rw-rw-rw- (0666)
+		requiredPerms := os.FileMode(0666)
+		currentPerms := mode.Perm()
+		hasMinimumPerms := (currentPerms & requiredPerms) == requiredPerms
+
+		if !isWritable || !hasMinimumPerms {
 			logger.Warn().
 				Str("db_path", dbPath).
-				Str("permissions", mode.String()).
-				Msg("Database file is not writable - attempting to fix permissions")
+				Str("current_permissions", mode.String()).
+				Str("required_minimum", requiredPerms.String()).
+				Bool("owner_writable", isWritable).
+				Bool("has_minimum_perms", hasMinimumPerms).
+				Msg("Database file permissions insufficient - attempting to fix")
 
-			// Try to add write permission for owner
-			newMode := mode | 0600 // Add read+write for owner
+			// Set to rw-rw-rw- (0666)
+			newMode := requiredPerms
 			if chmodErr := os.Chmod(dbPath, newMode); chmodErr != nil {
 				logger.Error().
 					Err(chmodErr).
@@ -223,21 +235,22 @@ func main() {
 				logger.Fatal().
 					Str("db_path", dbPath).
 					Str("permissions", mode.String()).
-					Msg("Database file must be writable - please fix permissions manually")
+					Str("required", requiredPerms.String()).
+					Msg("Database file must have at least rw-rw-rw- (0666) permissions")
 			} else {
 				logger.Info().
 					Str("db_path", dbPath).
 					Str("old_permissions", mode.String()).
 					Str("new_permissions", newMode.String()).
-					Msg("Successfully updated database file permissions")
+					Msg("Successfully updated database file permissions to rw-rw-rw-")
 			}
 		} else {
 			logger.Debug().
 				Str("db_path", dbPath).
 				Str("permissions", mode.String()).
-				Msg("Database file permissions are sufficient (writable)")
+				Msg("Database file permissions are sufficient (minimum rw-rw-rw-)")
 		}
-		
+
 		// Test if we can actually open the file for writing (even with correct permissions, filesystem might be read-only)
 		testWrite, openErr := os.OpenFile(dbPath, os.O_WRONLY|os.O_APPEND, 0644)
 		if openErr != nil {
@@ -327,42 +340,214 @@ func main() {
 		Str("db_path", dbPath).
 		Msg("Store initialized successfully")
 
-	// Create minimal Slack bot
-	bot, err := NewMinimalSlackBot(botToken, appToken, store, logger)
-	if err != nil {
-		logger.Fatal().Err(err).Msg("Failed to create Slack bot")
+	// Get API token for authentication
+	apiToken := os.Getenv("API_TOKEN")
+	if apiToken == "" {
+		apiToken = "my-secret-token" // fallback for development
 	}
 
-	// Test Slack connection
-	if err := bot.TestConnection(); err != nil {
-		logger.Fatal().Err(err).Msg("Failed to connect to Slack")
+	// HTTP server (API + metrics + health) - START THIS FIRST before Slack connection
+	// This ensures the API is always available even if Slack is down
+	serverPort := os.Getenv("SERVER_PORT")
+	if serverPort == "" {
+		serverPort = "8080"
 	}
-
-	// HTTP server (metrics + health)
 	metricsPort := os.Getenv("METRICS_PORT")
 	if metricsPort == "" {
 		metricsPort = "9090"
 	}
+
+	// Track Slack connection status for health checks
+	var slackConnected bool
+	var slackClient *slack.Client
+
 	mux := http.NewServeMux()
+
+	// Metrics endpoint
 	mux.Handle("/metrics", promhttp.Handler())
+
+	// Health endpoints
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		status := "healthy"
+		statusCode := http.StatusOK
+		if !slackConnected {
+			status = "degraded"
+			statusCode = http.StatusServiceUnavailable
+		}
+		w.WriteHeader(statusCode)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":          status,
+			"slack_connected": slackConnected,
+			"service":         "beerbot-backend",
+		})
+	})
+
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
-	server := &http.Server{Addr: ":" + metricsPort, Handler: mux}
+
+	mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":          "healthy",
+			"slack_connected": slackConnected,
+			"service":         "beerbot-backend",
+		})
+	})
+
+	// API endpoints with authentication
+	givenHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		user := r.URL.Query().Get("user")
+		if user == "" {
+			http.Error(w, "user required", http.StatusBadRequest)
+			return
+		}
+		start, end, err := parseDateRangeFromParams(r)
+		if err != nil {
+			http.Error(w, "invalid or missing date range: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		c, err := store.CountGivenInDateRange(user, start, end)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"user":  user,
+			"start": start.Format("2006-01-02"),
+			"end":   end.Format("2006-01-02"),
+			"given": c,
+		})
+	})
+
+	receivedHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		user := r.URL.Query().Get("user")
+		if user == "" {
+			http.Error(w, "user required", http.StatusBadRequest)
+			return
+		}
+		start, end, err := parseDateRangeFromParams(r)
+		if err != nil {
+			http.Error(w, "invalid or missing date range: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		c, err := store.CountReceivedInDateRange(user, start, end)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"user":     user,
+			"start":    start.Format("2006-01-02"),
+			"end":      end.Format("2006-01-02"),
+			"received": c,
+		})
+	})
+
+	userHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		userID := r.URL.Query().Get("user")
+		if userID == "" {
+			http.Error(w, "user required", http.StatusBadRequest)
+			return
+		}
+		
+		w.Header().Set("Content-Type", "application/json")
+		
+		// If Slack is not connected, return user ID as fallback
+		if slackClient == nil {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"real_name":     userID, // Fallback to user ID
+				"profile_image": nil,
+			})
+			return
+		}
+		
+		// Try to get user info from Slack
+		user, err := slackClient.GetUserInfo(userID)
+		if err != nil {
+			// On error, return user ID as fallback instead of 500 error
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"real_name":     userID, // Fallback to user ID
+				"profile_image": nil,
+			})
+			return
+		}
+		
+		// Success - return real name and avatar
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"real_name":     user.RealName,
+			"profile_image": user.Profile.Image192,
+		})
+	})
+
+	giversHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		list, err := store.GetAllGivers()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(list)
+	})
+
+	recipientsHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		list, err := store.GetAllRecipients()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(list)
+	})
+
+	mux.Handle("/api/given", authMiddleware(apiToken, givenHandler))
+	mux.Handle("/api/received", authMiddleware(apiToken, receivedHandler))
+	mux.Handle("/api/user", authMiddleware(apiToken, userHandler))
+	mux.Handle("/api/givers", authMiddleware(apiToken, giversHandler))
+	mux.Handle("/api/recipients", authMiddleware(apiToken, recipientsHandler))
+
+	server := &http.Server{Addr: ":" + serverPort, Handler: mux}
 	go func() {
-		logger.Info().Str("port", metricsPort).Msg("Starting HTTP server (/metrics, /health)")
+		logger.Info().
+			Str("port", serverPort).
+			Msg("Starting HTTP API server")
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.Error().Err(err).Msg("HTTP server error")
 		}
 	}()
 
-	// Run bot in background
+	// Create minimal Slack bot (non-fatal if fails)
+	bot, err := NewMinimalSlackBot(botToken, appToken, store, logger)
+	if err != nil {
+		logger.Warn().Err(err).Msg("Failed to create Slack bot - will continue without Slack functionality")
+		slackConnected = false
+	} else {
+		// Test Slack connection (non-fatal if fails)
+		if err := bot.TestConnection(); err != nil {
+			logger.Warn().Err(err).Msg("Failed to connect to Slack - will continue without Slack functionality")
+			slackConnected = false
+		} else {
+			slackConnected = true
+			slackClient = bot.GetAPIClient()
+			logger.Info().Msg("Slack connection successful")
+		}
+	}
+
+	// Run bot in background (only if connected)
 	botErrCh := make(chan error, 1)
-	go func() {
-		logger.Info().Msg("Starting minimal Slack bot with Socket Mode")
-		botErrCh <- bot.Start()
-	}()
+	if slackConnected && bot != nil {
+		go func() {
+			logger.Info().Msg("Starting minimal Slack bot with Socket Mode")
+			botErrCh <- bot.Start()
+		}()
+	} else {
+		logger.Warn().Msg("Slack bot not started due to connection issues - API server running in degraded mode")
+	}
 
 	// Graceful shutdown
 	sigCh := make(chan os.Signal, 2)
@@ -389,4 +574,54 @@ func main() {
 		logger.Warn().Err(err).Msg("HTTP server shutdown error")
 	}
 	logger.Info().Msg("Shutdown complete")
+}
+
+// parseDateRangeFromParams parses date range from query parameters
+// Accepts either day=YYYY-MM-DD or start=YYYY-MM-DD&end=YYYY-MM-DD
+func parseDateRangeFromParams(r *http.Request) (time.Time, time.Time, error) {
+	day := r.URL.Query().Get("day")
+	startStr := r.URL.Query().Get("start")
+	endStr := r.URL.Query().Get("end")
+
+	layout := "2006-01-02"
+	if day != "" {
+		t, err := time.Parse(layout, day)
+		if err != nil {
+			return time.Time{}, time.Time{}, err
+		}
+		return t, t, nil
+	}
+	if startStr != "" && endStr != "" {
+		start, err1 := time.Parse(layout, startStr)
+		end, err2 := time.Parse(layout, endStr)
+		if err1 != nil || err2 != nil {
+			return time.Time{}, time.Time{}, fmt.Errorf("invalid start or end date")
+		}
+		return start, end, nil
+	}
+	return time.Time{}, time.Time{}, fmt.Errorf("must provide either day=YYYY-MM-DD or start=YYYY-MM-DD&end=YYYY-MM-DD")
+}
+
+// authMiddleware validates Bearer token authentication
+func authMiddleware(apiToken string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authHeader := r.Header.Get("Authorization")
+		if authHeader == "" {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		bearerToken := strings.Split(authHeader, " ")
+		if len(bearerToken) != 2 || bearerToken[0] != "Bearer" {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		if bearerToken[1] != apiToken {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
 }
