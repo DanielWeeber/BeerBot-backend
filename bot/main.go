@@ -202,6 +202,11 @@ func main() {
 					Str("new_permissions", newMode.String()).
 					Msg("Successfully updated database file permissions")
 			}
+		} else {
+			logger.Debug().
+				Str("db_path", dbPath).
+				Str("permissions", mode.String()).
+				Msg("Database file permissions are sufficient (writable)")
 		}
 	} else if os.IsNotExist(err) {
 		logger.Debug().
