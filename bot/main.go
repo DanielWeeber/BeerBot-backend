@@ -172,6 +172,37 @@ func main() {
 			Str("permissions", fileInfo.Mode().String()).
 			Int64("size_bytes", fileInfo.Size()).
 			Msg("Existing database file found")
+
+		// Check if file is writable by owner (user permission bit)
+		mode := fileInfo.Mode()
+		isWritable := mode&0200 != 0 // Owner write permission
+		if !isWritable {
+			logger.Warn().
+				Str("db_path", dbPath).
+				Str("permissions", mode.String()).
+				Msg("Database file is not writable - attempting to fix permissions")
+
+			// Try to add write permission for owner
+			newMode := mode | 0600 // Add read+write for owner
+			if chmodErr := os.Chmod(dbPath, newMode); chmodErr != nil {
+				logger.Error().
+					Err(chmodErr).
+					Str("db_path", dbPath).
+					Str("current_permissions", mode.String()).
+					Str("attempted_permissions", newMode.String()).
+					Msg("Failed to fix database file permissions")
+				logger.Fatal().
+					Str("db_path", dbPath).
+					Str("permissions", mode.String()).
+					Msg("Database file must be writable - please fix permissions manually")
+			} else {
+				logger.Info().
+					Str("db_path", dbPath).
+					Str("old_permissions", mode.String()).
+					Str("new_permissions", newMode.String()).
+					Msg("Successfully updated database file permissions")
+			}
+		}
 	} else if os.IsNotExist(err) {
 		logger.Debug().
 			Str("db_path", dbPath).
