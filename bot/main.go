@@ -163,6 +163,35 @@ func main() {
 				Str("db_dir", dbDir).
 				Msg("Database directory is writable")
 		}
+
+		// Additional filesystem check: try to write and then modify the test file
+		// This detects read-only filesystem mounts even when permissions look correct
+		fsTestFile := filepath.Join(dbDir, ".fs_write_test")
+		if err := os.WriteFile(fsTestFile, []byte("initial"), 0644); err != nil {
+			logger.Error().
+				Err(err).
+				Str("db_dir", dbDir).
+				Msg("Filesystem appears to be read-only (write failed)")
+			logger.Fatal().
+				Str("db_dir", dbDir).
+				Msg("Cannot proceed - filesystem is mounted read-only")
+		}
+
+		// Try to modify the file to ensure filesystem is truly writable
+		if err := os.WriteFile(fsTestFile, []byte("modified"), 0644); err != nil {
+			os.Remove(fsTestFile)
+			logger.Error().
+				Err(err).
+				Str("db_dir", dbDir).
+				Msg("Filesystem appears to be read-only (modification failed)")
+			logger.Fatal().
+				Str("db_dir", dbDir).
+				Msg("Cannot proceed - filesystem is mounted read-only or has restrictions")
+		}
+		os.Remove(fsTestFile)
+		logger.Debug().
+			Str("db_dir", dbDir).
+			Msg("Filesystem is fully writable (create and modify successful)")
 	}
 
 	// Check if database file exists and log its permissions
@@ -208,6 +237,23 @@ func main() {
 				Str("permissions", mode.String()).
 				Msg("Database file permissions are sufficient (writable)")
 		}
+		
+		// Test if we can actually open the file for writing (even with correct permissions, filesystem might be read-only)
+		testWrite, openErr := os.OpenFile(dbPath, os.O_WRONLY|os.O_APPEND, 0644)
+		if openErr != nil {
+			logger.Error().
+				Err(openErr).
+				Str("db_path", dbPath).
+				Str("permissions", mode.String()).
+				Msg("Cannot open database file for writing - filesystem may be read-only")
+			logger.Fatal().
+				Str("db_path", dbPath).
+				Msg("Database file cannot be opened for writing despite correct permissions")
+		}
+		testWrite.Close()
+		logger.Debug().
+			Str("db_path", dbPath).
+			Msg("Database file can be opened for writing")
 	} else if os.IsNotExist(err) {
 		logger.Debug().
 			Str("db_path", dbPath).
