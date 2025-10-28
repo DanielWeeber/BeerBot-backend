@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"flag"
-	"io/ioutil"
 	"net/http"
 	"os"
 	"os/signal"
@@ -62,7 +61,7 @@ func readSecretFile(name string) string {
 		filepath.Join("/secrets", name),
 	}
 	for _, p := range paths {
-		b, err := ioutil.ReadFile(p)
+		b, err := os.ReadFile(p)
 		if err == nil {
 			return strings.TrimSpace(string(b))
 		}
@@ -121,24 +120,130 @@ func main() {
 		dbPath = "/data/beerbot.db"
 	}
 
-	// Initialize database
+	// Initialize database with comprehensive diagnostics
 	logger.Info().Str("db_path", dbPath).Msg("Initializing database")
+
+	// Check if DB path is absolute or relative
+	logger.Debug().
+		Str("db_path", dbPath).
+		Bool("is_absolute", filepath.IsAbs(dbPath)).
+		Msg("Database path analysis")
+
+	// Check parent directory existence and permissions
+	dbDir := filepath.Dir(dbPath)
+	if dirInfo, err := os.Stat(dbDir); err != nil {
+		logger.Error().
+			Err(err).
+			Str("db_dir", dbDir).
+			Msg("Database directory does not exist or is not accessible")
+		logger.Fatal().
+			Str("db_dir", dbDir).
+			Msg("Cannot proceed - database directory must exist and be writable")
+	} else {
+		logger.Debug().
+			Str("db_dir", dbDir).
+			Str("permissions", dirInfo.Mode().String()).
+			Bool("is_dir", dirInfo.IsDir()).
+			Msg("Database directory info")
+
+		// Check if directory is writable
+		testFile := filepath.Join(dbDir, ".write_test")
+		if err := os.WriteFile(testFile, []byte("test"), 0644); err != nil {
+			logger.Error().
+				Err(err).
+				Str("db_dir", dbDir).
+				Str("permissions", dirInfo.Mode().String()).
+				Msg("Database directory is not writable")
+			logger.Fatal().
+				Str("db_dir", dbDir).
+				Msg("Cannot proceed - database directory must be writable")
+		} else {
+			os.Remove(testFile)
+			logger.Debug().
+				Str("db_dir", dbDir).
+				Msg("Database directory is writable")
+		}
+	}
+
+	// Check if database file exists and log its permissions
+	if fileInfo, err := os.Stat(dbPath); err == nil {
+		logger.Debug().
+			Str("db_path", dbPath).
+			Str("permissions", fileInfo.Mode().String()).
+			Int64("size_bytes", fileInfo.Size()).
+			Msg("Existing database file found")
+	} else if os.IsNotExist(err) {
+		logger.Debug().
+			Str("db_path", dbPath).
+			Msg("Database file does not exist - will be created")
+	} else {
+		logger.Warn().
+			Err(err).
+			Str("db_path", dbPath).
+			Msg("Could not stat database file")
+	}
+
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
-		logger.Fatal().Err(err).Msg("Failed to open database")
+		logger.Fatal().
+			Err(err).
+			Str("db_path", dbPath).
+			Msg("Failed to open database")
 	}
 	defer db.Close()
 
 	// Test database connection
 	if err := db.Ping(); err != nil {
-		logger.Fatal().Err(err).Msg("Failed to ping database")
+		logger.Error().
+			Err(err).
+			Str("db_path", dbPath).
+			Msg("Database ping failed - connection error")
+
+		// Additional diagnostics after ping failure
+		if fileInfo, statErr := os.Stat(dbPath); statErr == nil {
+			logger.Debug().
+				Str("db_path", dbPath).
+				Str("permissions", fileInfo.Mode().String()).
+				Int64("size_bytes", fileInfo.Size()).
+				Msg("Database file after failed ping")
+		}
+
+		logger.Fatal().
+			Err(err).
+			Str("db_path", dbPath).
+			Msg("Failed to ping database")
 	}
+
+	logger.Debug().
+		Str("db_path", dbPath).
+		Msg("Database connection successful")
 
 	// Initialize store
 	store, err := NewSQLiteStore(db)
 	if err != nil {
-		logger.Fatal().Err(err).Msg("Failed to initialize store")
+		logger.Error().
+			Err(err).
+			Str("db_path", dbPath).
+			Msg("Store initialization failed during migration")
+
+		// Check file permissions after migration failure
+		if fileInfo, statErr := os.Stat(dbPath); statErr == nil {
+			logger.Debug().
+				Str("db_path", dbPath).
+				Str("permissions", fileInfo.Mode().String()).
+				Int64("size_bytes", fileInfo.Size()).
+				Msg("Database file after migration failure")
+		}
+
+		logger.Fatal().
+			Err(err).
+			Str("db_path", dbPath).
+			Msg("Failed to initialize store")
 	}
+
+	logger.Debug().
+		Str("db_path", dbPath).
+		Msg("Store initialized successfully")
 
 	// Create minimal Slack bot
 	bot, err := NewMinimalSlackBot(botToken, appToken, store, logger)
