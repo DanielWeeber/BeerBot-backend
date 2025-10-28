@@ -21,8 +21,9 @@ func (m *mockStore) CountGivenOnDate(user string, date string) (int, error) { re
 func (m *mockStore) GetAllGivers() ([]string, error)                        { return nil, nil }
 func (m *mockStore) GetAllRecipients() ([]string, error)                    { return nil, nil }
 func (m *mockStore) TryMarkEventProcessed(eventID string, t time.Time) (bool, error) {
-	// Always indicate not processed so self_gift path reachable
-	return false, nil
+	// Return true to indicate this is a NEW event (not already processed)
+	// This allows the test to proceed through the processing logic
+	return true, nil
 }
 func (m *mockStore) AddBeer(giver string, recipient string, ts string, eventTime time.Time, count int) error {
 	return nil
@@ -47,8 +48,8 @@ func TestProcessBeerGiving_SelfGift(t *testing.T) {
 	if !bot.isBeerGiving(ev.Text) {
 		t.Fatalf("test precondition failed: text not recognized as beer giving")
 	}
-	// Call logic directly; ignore ephemeral post errors (stub client)
-	bot.processBeerGiving(ev)
+	// Call logic directly with test envelope_id; ignore ephemeral post errors (stub client)
+	bot.processBeerGiving(ev, "test-envelope-123")
 	found := false
 	for _, status := range ms.outcomes {
 		if status == "self_gift" {
